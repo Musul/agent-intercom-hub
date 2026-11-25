@@ -1,0 +1,29 @@
+{
+  "publicURL": "https://intercom.example.com",
+  "clients": [
+    {
+      "scope": "default",
+      "agent": "admin",
+      "name": "admin",
+      "apiKeySha256": "<sha256>"
+    },
+    {
+      "scope": "default",
+      "agent": "bruno",
+      "name": "bruno",
+      "apiKeySha256": "<sha256>"
+    },
+    {
+      "scope": "default",
+      "agent": "carla",
+      "name": "carla",
+      "apiKeySha256": "<sha256>"
+    },
+    {
+      "scope": "default",
+      "agent": "ana",
+      "name": "ana",
+      "apiKeySha256": "<sha256>"
+    }
+  ]
+}

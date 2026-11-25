@@ -1,0 +1,50 @@
+[Unit]
+Description=Agent Intercom hosted MCP gateway
+Requires=agentintercom.service
+After=agentintercom.service network.target
+PartOf=agentintercom.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=october-bus
+Group=october-bus
+Environment=OCTOBER_BUS_DATA_DIR=/var/lib/october-bus
+Environment=OCTOBER_BUS_RUNTIME_DIR=/run/october-bus
+ExecStart=/opt/agentintercom/current/agentintercom gateway start --config /var/lib/october-bus/gateway.json --listen 127.0.0.1:8787
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+MemoryMax=256M
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+IPAddressDeny=any
+IPAddressAllow=localhost
+TasksMax=256
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

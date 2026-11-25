@@ -1,0 +1,46 @@
+{
+	admin off
+	servers {
+		strict_sni_host
+		max_header_size 16KB
+		timeouts {
+			read_header 10s
+			read_body 20s
+			write 60s
+			idle 2m
+		}
+	}
+}
+
+intercom.example.com {
+	log {
+		output file /var/log/caddy/intercom-access.log {
+			mode 0640
+			roll_size 10MiB
+			roll_keep 5
+			roll_keep_for 720h
+		}
+		format json
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Cache-Control "no-store"
+		-Server
+	}
+	request_body {
+		max_size 1MiB
+	}
+	handle /mcp {
+		reverse_proxy 127.0.0.1:8787 {
+			flush_interval -1
+			transport http {
+				dial_timeout 3s
+				response_header_timeout 35s
+			}
+		}
+	}
+	handle {
+		respond "not found" 404
+	}
+}

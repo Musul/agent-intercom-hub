@@ -1,0 +1,21 @@
+# Dependencias y datos locales
+node_modules/
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Nunca versionar secretos
+*.key
+*.pem
+*.token
+id_*
+.env
+.env.*
+!.env.example
+hosts.txt
+*.tmp
+*.out
+
+# Resultados de la batería adversarial
+adversarial/report.json

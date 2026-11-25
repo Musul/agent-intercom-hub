@@ -1,0 +1,44 @@
+#!/bin/bash
+# intercom-agent {add|revoke|list} [agent-id]  -- administra las llaves de Agent Intercom (scope default).
+# Las llaves en claro viven solo en /var/lib/october-bus/keys (0700, october-bus); el gateway guarda su sha256.
+set -euo pipefail
+[ "$(id -u)" = 0 ] || { echo "ejecuta con sudo"; exit 1; }
+SCOPE=default; DIR=/var/lib/october-bus; CFG=$DIR/gateway.json
+AI() { sudo -u october-bus env OCTOBER_BUS_DATA_DIR=$DIR OCTOBER_BUS_RUNTIME_DIR=/run/october-bus /opt/agentintercom/current/agentintercom "$@"; }
+agents() { sudo -u october-bus python3 -I -c 'import json;print("\n".join(c["agent"] for c in json.load(open("'$CFG'"))["clients"]))'; }
+restart_gw() {
+  systemctl restart agentintercom-gateway.service
+  for i in $(seq 1 30); do [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Host: $(sudo -u october-bus python3 -I -c 'import json,urllib.parse as u;print(u.urlparse(json.load(open("'$CFG'"))["publicURL"]).netloc)')" http://127.0.0.1:8787/health/ready)" = 204 ] && return 0; sleep 2; done
+  echo "el gateway no quedo listo"; exit 1; }
+cmd=${1:-}; id=${2:-}
+case "$cmd" in
+  list) for a in $(agents); do printf '%-20s llave: %s\n' "$a" "$([ -f $DIR/keys/$a.key ] && echo 'en el servidor (pendiente de entregar y destruir)' || echo 'entregada/destruida')"; done ;;
+  add)
+    [[ "$id" =~ ^[a-z][a-z0-9-]{1,31}$ ]] || { echo "id invalido (minusculas, digitos y guiones, 2-32)"; exit 1; }
+    agents | grep -qx "$id" && { echo "$id ya existe"; exit 1; }
+    out=$(AI gateway key --output $DIR/keys/$id.key 2>&1); dg=$(printf '%s' "$out" | grep -oE '[a-f0-9]{64}' | head -1)
+    [ -n "$dg" ] || { shred -u $DIR/keys/$id.key 2>/dev/null || true; echo "no obtuve digest"; exit 1; }
+    sudo -u october-bus env A="$id" D="$dg" S="$SCOPE" python3 -I - <<PY
+import json, os, tempfile
+p = "$CFG"; c = json.load(open(p))
+c["clients"].append({"scope": os.environ["S"], "agent": os.environ["A"], "name": os.environ["A"], "apiKeySha256": os.environ["D"]})
+fd, tmp = tempfile.mkstemp(dir="$DIR"); os.chmod(tmp, 0o600)
+with os.fdopen(fd, "w") as f: json.dump(c, f, indent=2)
+os.replace(tmp, p)
+PY
+    restart_gw
+    for peer in $(agents | grep -vx "$id"); do AI link --scope $SCOPE "$id" "$peer" >/dev/null && echo "enlazado $id <-> $peer"; done
+    echo "Llave: $DIR/keys/$id.key  -> entregala por canal privado y luego: sudo shred -u $DIR/keys/$id.key" ;;
+  revoke)
+    agents | grep -qx "$id" || { echo "$id no existe"; exit 1; }
+    sudo -u october-bus env A="$id" python3 -I - <<PY
+import json, os, tempfile
+p = "$CFG"; c = json.load(open(p)); c["clients"] = [x for x in c["clients"] if x["agent"] != os.environ["A"]]
+fd, tmp = tempfile.mkstemp(dir="$DIR"); os.chmod(tmp, 0o600)
+with os.fdopen(fd, "w") as f: json.dump(c, f, indent=2)
+os.replace(tmp, p)
+PY
+    [ -f $DIR/keys/$id.key ] && shred -u $DIR/keys/$id.key
+    restart_gw; echo "$id revocado (la llave deja de valer al reiniciar el gateway)" ;;
+  *) echo "uso: sudo intercom-agent add <id> | revoke <id> | list"; exit 2 ;;
+esac

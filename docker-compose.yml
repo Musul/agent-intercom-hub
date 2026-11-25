@@ -1,0 +1,25 @@
+services:
+  intercom:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      TRUST_PROXY: "1" # detrás de Caddy/nginx
+    ports:
+      - "127.0.0.1:8787:8787" # solo local: el proxy TLS publica el servicio
+    volumes:
+      - intercom-data:/data
+    # Endurecimiento (la batería adversarial ataca el contenedor con estos mismos ajustes):
+    read_only: true # raíz de solo lectura; solo se escribe en /data y /tmp
+    tmpfs:
+      - /tmp:size=64m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m # una subida de 16 MiB ocupa ~32 MiB mientras se guarda; con 256 MiB queda poca holgura
+    pids_limit: 256
+
+volumes:
+  intercom-data:

@@ -1,0 +1,19 @@
+[DEFAULT]
+backend = auto
+banaction = nftables
+banaction_allports = nftables[type=allports]
+
+[sshd]
+enabled = false
+
+[intercom-caddy]
+enabled = true
+filter = intercom-caddy
+logpath = /var/log/caddy/intercom-access.log
+port = http,https
+maxretry = 20
+findtime = 60
+bantime = 1h
+bantime.increment = true
+bantime.factor = 4
+bantime.maxtime = 7d

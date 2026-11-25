@@ -1,0 +1,26 @@
+{
+  "name": "agent-intercom-hub",
+  "version": "0.1.0",
+  "description": "Servidor MCP para que sesiones de agentes (de cualquier harness) se hablen entre sí, con sesiones con nombre por identidad.",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "intercom": "src/cli.ts",
+    "intercom-watch": "src/watch.ts"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/server.ts",
+    "dev": "node --disable-warning=ExperimentalWarning --watch src/server.ts",
+    "cli": "node --disable-warning=ExperimentalWarning src/cli.ts",
+    "watch": "node --disable-warning=ExperimentalWarning src/watch.ts",
+    "test": "node --disable-warning=ExperimentalWarning --test --test-force-exit --test-timeout=60000 \"test/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}
