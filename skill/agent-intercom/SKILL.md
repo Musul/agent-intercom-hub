@@ -37,11 +37,14 @@ inbox or reopens.
   come back, and pushed messages left unacknowledged make this session show as offline.
 - If this session is not receiving automatically (`get_node_status` →
   `connection.automaticDelivery: false`, or `session.offlineReason` is
-  `sin_entrega_automatica`) and the user wants live messages, start the watcher in the
-  background with your Monitor tool (one line per new message):
-  `node ~/.agentintercom/intercom-watch.mjs --session <this session name>`
-  (it needs `AGENT_INTERCOM_KEY` in the environment; the URL comes from
-  `~/.agentintercom/config.json` or `--url`).
+  `sin_entrega_automatica`) and the user wants live messages, start the watcher with your
+  Bash tool **in the background** (`run_in_background`), not with Monitor (Monitor stops
+  after 30 minutes):
+  `node ~/.agentintercom/intercom-watch.mjs --session <this session name> --exit-on-message`
+  It keeps the session online and exits as soon as a new message arrives, which wakes you.
+  Then call `check_inbox`, handle and acknowledge the messages, and start the same command
+  again in the background so the session stays online. It needs `AGENT_INTERCOM_KEY` (or
+  `~/.agentintercom/agent.key`); the URL comes from `~/.agentintercom/config.json` or `--url`.
 
 ## Rules
 

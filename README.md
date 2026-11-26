@@ -107,8 +107,8 @@ Guía completa (varias sesiones, `curl`, migración desde el servidor actual): [
 
 - **Entrega automática** (la sesión figura `online`): Claude Code lanzado con el canal
   (`--dangerously-load-development-channels server:agent_intercom`; en planes Team/Enterprise el admin debe permitir
-  `channelsEnabled`), la extensión de pi, o el **vigilante** (`skill/agent-intercom/scripts/intercom-watch.mjs`) con el
-  Monitor de Claude Code, y el **plugin de OpenCode**. Codex y Antigravity no pueden despertar un chat quieto: sus
+  `channelsEnabled`), la extensión de pi, o el **vigilante** (`skill/agent-intercom/scripts/intercom-watch.mjs --exit-on-message`)
+  en segundo plano en Claude Code (el Monitor se corta a los 30 min), y el **plugin de OpenCode**. Codex y Antigravity no pueden despertar un chat quieto: sus
   **hooks** entregan el mensaje al empezar, cuando el usuario escribe o cuando el agente termina un turno, y figuran
   `offline` (`sin_entrega_automatica`). Antigravity se conecta por un puente stdio local (`intercom-bridge.mjs`).
 - Un solo nodo (SQLite, con copia en caliente: `intercom backup`). Alta disponibilidad real exigiría mover el almacenamiento

@@ -3,8 +3,13 @@
  * intercom-watch — vigilante de buzón (entrega automática sin canales).
  *
  * Imprime UNA línea por mensaje nuevo de una sesión y mantiene abierto su stream como «oyente», así la sesión figura
- * online. Pensado para el Monitor de Claude Code (o cualquier cliente que lea la salida de un proceso en segundo
- * plano): cada línea despierta al agente, que lee el mensaje con check_inbox.
+ * online. Cada línea despierta al agente, que lee el mensaje con check_inbox.
+ *
+ * Dos formas de usarlo en Claude Code:
+ *  - `--exit-on-message` con Bash en segundo plano (recomendado, sin límite de tiempo): termina en cuanto llega un
+ *    mensaje que el agente aún no ha recogido; Claude Code despierta al agente al terminar el proceso; el agente lo
+ *    atiende (check_inbox) y vuelve a lanzar el vigilante.
+ *  - Sin esa opción, con el Monitor: una línea por mensaje, pero el Monitor se corta a los 30 minutos.
  *
  * Por seguridad NO imprime el contenido (entraría en el contexto del agente como texto de un tercero): solo quién,
  * cuándo y de qué tipo. `--preview N` muestra los primeros N caracteres.
@@ -27,12 +32,13 @@ const { values } = parseArgs({
     'wait-ms': { type: 'string' },
     'no-presence': { type: 'boolean' },
     once: { type: 'boolean' },
+    'exit-on-message': { type: 'boolean' },
     help: { type: 'boolean' },
   },
 });
 
 if (values.help) {
-  console.log('Uso: AGENT_INTERCOM_KEY=aik_… node intercom-watch.mjs --url <https://servidor> --session <nombre> [--preview N] [--once] [--no-presence]');
+  console.log('Uso: AGENT_INTERCOM_KEY=aik_… node intercom-watch.mjs --url <https://servidor> --session <nombre> [--exit-on-message] [--preview N] [--once] [--no-presence]');
   process.exit(0);
 }
 
@@ -83,16 +89,18 @@ async function call(tool, args) {
 }
 
 /** Mantiene abierto el stream como oyente: mientras viva, la sesión figura online. */
+let stopping = false;
+const presence = new AbortController();
 async function holdPresence() {
-  for (;;) {
+  while (!stopping) {
     try {
-      const res = await fetch(`${base}/mcp`, { headers: { ...headers, Accept: 'text/event-stream', 'X-Intercom-Listener': '1' } });
+      const res = await fetch(`${base}/mcp`, { headers: { ...headers, Accept: 'text/event-stream', 'X-Intercom-Listener': '1' }, signal: presence.signal });
       if (res.status === 401) return;
       if (res.ok && res.body) for await (const _ of res.body) void _;
     } catch {
       /* se reintenta */
     }
-    await sleep(5000);
+    if (!stopping) await sleep(5000);
   }
 }
 
@@ -113,14 +121,23 @@ async function main() {
       const r = await call('check_inbox', { peek: true, waitMs: values.once ? 0 : waitMs, ...(cursor ? { afterId: cursor } : {}) });
       if (!r.ok) throw new Error(r.error?.message ?? 'error');
       backoff = 1000;
+      let fresh = 0;
       for (const m of r.result.messages) {
         cursor = m.id;
         if (seen.has(m.id)) continue;
         seen.add(m.id);
+        // con --exit-on-message solo cuenta lo que el agente aún no recogió (lo ya recogido no lo vuelve a despertar)
+        if (values['exit-on-message'] && m.redelivered) continue;
+        fresh++;
         const tipo = m.kind === 'channel' ? 'aviso de canal' : m.kind === 'human' ? 'respuesta de una persona' : m.mode;
         console.log(`[intercom] mensaje ${m.id} de ${clean(m.from, 80)} (${tipo}). Léelo con check_inbox${preview ? ` · «${clean(m.body, preview)}»` : ''}`);
       }
-      if (values.once) return;
+      if (values.once || (values['exit-on-message'] && fresh > 0)) {
+        // Se termina cerrando el stream y dejando vaciarse el proceso (process.exit con un fetch abierto revienta en Windows).
+        stopping = true;
+        presence.abort();
+        return;
+      }
     } catch (e) {
       const wait = e.wait ?? backoff;
       console.error(`[intercom] ${e.message}; reintento en ${Math.round(wait / 1000)} s`);

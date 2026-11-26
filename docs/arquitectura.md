@@ -89,7 +89,7 @@ message_peer ──► queued ──► check_inbox ──► delivered ──�
 - **Entrega automática:** a un chat de Claude Code con stream abierto, cada mensaje en cola se le empuja como
   `notifications/claude/channel` (una vez por conexión; al abrirse, también lo que esperaba). Claude Code lo mete en
   el chat como `<channel source="agent_intercom" …>` y despierta al agente aunque esté esperando a su usuario. El
-  vigilante (`intercom-watch.mjs`, para el Monitor), la extensión de pi y el plugin de OpenCode hacen lo mismo por su
+  vigilante (`intercom-watch.mjs --exit-on-message`, en segundo plano: termina con cada mensaje y el agente lo relanza), la extensión de pi y el plugin de OpenCode hacen lo mismo por su
   lado con el aviso `inbox`. Codex y Antigravity no permiten meter nada en un chat quieto: sus **hooks**
   (`intercom-hook.mjs`) entregan en el siguiente turno. Hooks y plugins encuentran la sesión de su chat por
   `X-Session-Instance` (el proceso del cliente), el mismo id que manda su conexión MCP.

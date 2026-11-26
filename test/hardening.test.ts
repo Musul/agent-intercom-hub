@@ -266,6 +266,53 @@ describe('vigilante (watch) y copia de seguridad', () => {
     }
   });
 
+  it('vigilante --exit-on-message: termina al llegar un mensaje nuevo y, relanzado, no despierta por lo ya recogido', async () => {
+    const b = await boot({ ratePerMinute: 10_000 });
+    const ka = b.agent('ana');
+    const kb = b.agent('beto');
+    await tool(b.base, ka, 'a', 'set_session_info', { description: 'emisor' });
+    const cwd = new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
+    const launch = () => {
+      const child = spawn(process.execPath, ['skill/agent-intercom/scripts/intercom-watch.mjs', '--url', b.base, '--session', 'uno', '--exit-on-message'], {
+        env: { ...process.env, AGENT_INTERCOM_KEY: kb },
+        cwd,
+      });
+      const st = { out: '', code: null as number | null };
+      child.stdout.on('data', (c: Buffer) => (st.out += c.toString()));
+      child.on('exit', (c) => (st.code = c));
+      return { child, st };
+    };
+    const waitFor = async (cond: () => boolean, ms = 6000) => {
+      for (let t = 0; t < ms && !cond(); t += 50) await sleep(50);
+    };
+    const w1 = launch();
+    try {
+      await waitFor(() => w1.st.out.includes('vigilando beto/uno'));
+      const id1 = (await tool(b.base, ka, 'a', 'message_peer', { peer: 'beto/uno', message: 'primero' })).data.messageId;
+      await waitFor(() => w1.st.code !== null);
+      assert.equal(w1.st.code, 0);
+      assert.match(w1.st.out, new RegExp(`mensaje ${id1}`));
+      // el agente lo recoge (queda «delivered» sin confirmar) y relanza el vigilante: no debe terminar por ese mensaje
+      await tool(b.base, kb, 'uno', 'check_inbox');
+      const w2 = launch();
+      try {
+        await waitFor(() => w2.st.out.includes('vigilando beto/uno'));
+        await sleep(400);
+        assert.equal(w2.st.code, null);
+        const id2 = (await tool(b.base, ka, 'a', 'message_peer', { peer: 'beto/uno', message: 'segundo' })).data.messageId;
+        await waitFor(() => w2.st.code !== null);
+        assert.equal(w2.st.code, 0);
+        assert.match(w2.st.out, new RegExp(`mensaje ${id2}`));
+        assert.doesNotMatch(w2.st.out, new RegExp(`mensaje ${id1}`));
+      } finally {
+        w2.child.kill();
+      }
+    } finally {
+      w1.child.kill();
+      await b.close();
+    }
+  });
+
   it('backup en caliente: copia verificada y no sobrescribe', async () => {
     const b = await boot({ ratePerMinute: 10_000 });
     const k = b.agent('ana');
