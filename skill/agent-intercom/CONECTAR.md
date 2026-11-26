@@ -49,7 +49,9 @@ claude --dangerously-load-development-channels server:agent_intercom
   Claude Code. Sin eso, Claude Code descarta el canal y la sesión acaba `offline` (`sin_confirmar`).
 - **Sin canal, sin hacer nada:** el instalador añade unos hooks a `~/.claude/settings.json` que arrancan solos el
   vigilante (`intercom-watch.mjs`). En la **terminal** corre en segundo plano desde que abres el chat y despierta al
-  agente con cada mensaje (`asyncRewake`). En **VS Code** (y otros IDE) el agente lo lanza en su primera respuesta.
+  agente con cada mensaje (`asyncRewake`). En **VS Code** (y otros IDE) el agente lo lanza en su primera respuesta y, como
+  termina con cada mensaje, un hook al final de cada turno le obliga a relanzarlo si no está corriendo: queda encendido
+  hasta que cierras el chat.
   Con el canal activo no arranca (no hace falta).
 
 ### OpenCode: entrega en vivo (plugin)

@@ -327,12 +327,12 @@ describe('vigilante (watch) y copia de seguridad', () => {
     assert.equal(init.status, 200);
     const home = mkdtempSync(join(tmpdir(), 'ic-home-'));
     const cwd = new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
-    const run = (args: string[], entry: string) => {
+    const run = (args: string[], entry: string, stdin = '{}') => {
       const child = spawn(process.execPath, ['skill/agent-intercom/scripts/intercom-watch.mjs', ...args], {
         env: { ...process.env, AGENT_INTERCOM_KEY: kb, AGENT_INTERCOM_URL: b.base, INTERCOM_INSTANCE: 'cc-test-hook', CLAUDE_CODE_ENTRYPOINT: entry, HOME: home, USERPROFILE: home },
         cwd,
       });
-      child.stdin.end('{}');
+      child.stdin.end(stdin);
       const st = { out: '', code: null as number | null };
       child.stdout.on('data', (c: Buffer) => (st.out += c.toString()));
       child.on('exit', (c) => (st.code = c));
@@ -372,6 +372,37 @@ describe('vigilante (watch) y copia de seguridad', () => {
     const term = run(['--hook-context'], 'cli');
     await waitFor(() => term.st.code !== null);
     assert.equal(term.st.out, '');
+
+    // Stop en IDE: el chat tiene sesión y su vigilante no corre → no le deja terminar el turno sin relanzarlo
+    const stopIn = JSON.stringify({ hook_event_name: 'Stop', stop_hook_active: false });
+    const s1 = run(['--hook-context'], 'claude-vscode', stopIn);
+    await waitFor(() => s1.st.code !== null, 20000);
+    const blocked = JSON.parse(s1.st.out);
+    assert.equal(blocked.decision, 'block');
+    assert.match(blocked.reason, /--auto --exit-on-message/);
+    // si ya lo pidió en este turno, no insiste (evita bucles)
+    const s2 = run(['--hook-context'], 'claude-vscode', JSON.stringify({ hook_event_name: 'Stop', stop_hook_active: true }));
+    await waitFor(() => s2.st.code !== null);
+    assert.equal(s2.st.out, '');
+    // con el vigilante corriendo, ni Stop ni SessionStart piden otro, y un segundo --auto se retira avisando
+    const queued = (await tool(b.base, kb, 'hookeado', 'check_inbox', {})).data.messages.map((m: { id: string }) => m.id);
+    await tool(b.base, kb, 'hookeado', 'acknowledge_messages', { messageIds: queued });
+    const auto = run(['--auto', '--exit-on-message'], 'claude-vscode');
+    try {
+      for (let i = 0; i < 200 && (await presence()) !== 'online'; i++) await sleep(50);
+      assert.equal(await presence(), 'online');
+      const s3 = run(['--hook-context'], 'claude-vscode', stopIn);
+      const ss = run(['--hook-context'], 'claude-vscode', JSON.stringify({ hook_event_name: 'SessionStart' }));
+      const dup2 = run(['--auto', '--exit-on-message'], 'claude-vscode');
+      await waitFor(() => s3.st.code !== null && ss.st.code !== null && dup2.st.code !== null, 20000);
+      assert.equal(s3.st.out, '');
+      assert.equal(ss.st.out, '');
+      assert.equal(dup2.st.code, 0);
+      assert.match(dup2.st.out, /Ya hay un vigilante activo/);
+      assert.equal(auto.st.code, null); // el primero sigue vivo
+    } finally {
+      auto.child.kill();
+    }
     await b.close();
   });
 

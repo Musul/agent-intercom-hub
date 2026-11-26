@@ -12,8 +12,10 @@
  *   --hook-rewake          hook de Claude Code con `asyncRewake` (SessionStart, UserPromptSubmit, Stop): en la
  *                          terminal arranca solo, sin que el agente haga nada, y sale con código 2 para despertarlo.
  *                          No hace nada con el canal activo, fuera de la terminal interactiva o si ya hay uno vivo.
- *   --hook-context         hook SessionStart: en VS Code y otros IDE (donde asyncRewake bloquearía el arranque) le
- *                          pide al agente que lance el vigilante en segundo plano en su primera respuesta.
+ *   --hook-context         hooks SessionStart y Stop en VS Code y otros IDE (donde asyncRewake bloquearía el arranque):
+ *                          al empezar le pide al agente que lance el vigilante en segundo plano; al terminar cada turno,
+ *                          si el chat tiene sesión y el vigilante no corre (p. ej. acaba de entregar un mensaje), no
+ *                          deja terminar al agente hasta que lo relance. Así queda encendido hasta cerrar el chat.
  *
  * Necesita AGENT_INTERCOM_KEY (o ~/.agentintercom/agent.key); la URL sale de --url, AGENT_INTERCOM_URL o
  * ~/.agentintercom/config.json. Sin dependencias. Node ≥ 18.
@@ -58,22 +60,74 @@ const readStdin = () => {
   }
 };
 
-// ── Hook SessionStart para IDE: pedirle al agente que arranque el vigilante ────────────────────────────────────────
+/** Archivo de bloqueo «hay un vigilante vivo para este chat» (lo comparten --hook-rewake, --auto y --hook-context). */
+const lockOf = (instance) => join(homedir(), '.agentintercom', 'state', `watch-${instance.replace(/[^\w.-]/g, '_')}.pid`);
+function lockHolder(file) {
+  try {
+    const pid = Number(readFileSync(file, 'utf8'));
+    return pid && pid !== process.pid && alive(pid) ? pid : 0;
+  } catch {
+    return 0;
+  }
+}
+
+// ── Hooks para IDE: el agente lanza el vigilante al empezar y lo relanza al terminar cada turno ────────────────────
 if (values['hook-context']) {
-  readStdin();
+  let input = {};
+  try {
+    input = JSON.parse(readStdin() || '{}');
+  } catch {
+    /* sin datos */
+  }
+  const event = input.hook_event_name ?? 'SessionStart';
+  const url = intercomUrl(values.url);
+  const apiKey = intercomKey();
   // Solo en IDE (VS Code, JetBrains, escritorio). En la terminal lo hace --hook-rewake; en -p y SDK, nada.
-  if (/vscode|jetbrains|desktop/i.test(entry) && intercomKey() && intercomUrl(values.url)) {
-    const cmd = `node "${self}" --auto --exit-on-message`;
+  const instance = /vscode|jetbrains|desktop/i.test(entry) && url && apiKey ? instanceOf(agentProcess('cc')) : null;
+  if (!instance) process.exit(0);
+  const lock = lockOf(instance);
+  const cmd = `node "${self}" --auto --exit-on-message`;
+  if (event === 'SessionStart' && !lockHolder(lock)) {
+    // (Si ya hay uno vivo, p. ej. tras /compact, no se pide otro.)
     process.stdout.write(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'SessionStart',
         additionalContext: [
           'Agent Intercom: este chat no recibe los mensajes de otras sesiones por sí solo.',
           `En tu primera respuesta, sin comentarlo, lanza con Bash en segundo plano (run_in_background; no uses Monitor): ${cmd}`,
-          'Mantiene la sesión online y termina cuando llega un mensaje: entonces llama a check_inbox, atiéndelo, confírmalo con acknowledge_messages y vuelve a lanzar el mismo comando en segundo plano.',
+          'Mantiene la sesión online y termina cuando llega un mensaje: entonces llama a check_inbox, atiéndelo, confírmalo con acknowledge_messages y vuelve a lanzar el mismo comando en segundo plano. Si dice que ya hay un vigilante activo, no hagas nada.',
         ].join(' '),
       },
     }));
+  }
+  if (event === 'Stop' && !input.stop_hook_active && !lockHolder(lock)) {
+    const t0 = Date.now();
+    // Solo hace falta si el chat tiene sesión con nombre y no recibe solo (sin canal ni otro vigilante).
+    // 404 (este chat no usa intercom) o 409 (aún sin nombre): no se insiste.
+    let need = false;
+    try {
+      const res = await fetch(`${url}/v1/tools/get_node_status`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'X-Session-Instance': instance, 'Content-Type': 'application/json' },
+        body: '{}',
+        signal: AbortSignal.timeout(5000),
+      });
+      const j = await res.json();
+      need = res.ok && j.ok && j.result?.identity?.named === true && j.result?.session?.presence !== 'online';
+    } catch {
+      /* falla abierto: nunca bloquea por un error */
+    }
+    // El agente pudo lanzarlo justo antes de terminar: se le dan unos segundos para aparecer.
+    while (need && Date.now() - t0 < 6000) {
+      if (lockHolder(lock)) need = false;
+      else await new Promise((r) => setTimeout(r, 250));
+    }
+    if (need) {
+      process.stdout.write(JSON.stringify({
+        decision: 'block',
+        reason: `Agent Intercom: el vigilante de este chat no está corriendo, así que no recibirías los mensajes de otras sesiones. Lánzalo ahora con Bash en segundo plano (run_in_background; no uses Monitor), sin comentarlo, y termina: ${cmd}`,
+      }));
+    }
   }
   process.exit(0);
 }
@@ -114,18 +168,14 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const clean = (s, n) =>
   [...s].map((ch) => { const c = ch.charCodeAt(0); return c < 32 || c === 127 || c === 0x2028 || c === 0x2029 ? ' ' : ch; }).join('').replace(/ +/g, ' ').trim().slice(0, n);
 
-// ── Un solo vigilante por chat (los hooks lo intentan arrancar en cada turno) ─────────────────────────────────────
+// ── Un solo vigilante por chat (los hooks lo intentan arrancar en cada turno; el agente puede relanzarlo de más) ──
 let lockFile = null;
-if (hookMode) {
-  lockFile = join(homedir(), '.agentintercom', 'state', `watch-${identity['X-Session-Instance'].replace(/[^\w.-]/g, '_')}.pid`);
-  try {
-    const pid = Number(readFileSync(lockFile, 'utf8'));
-    if (pid && pid !== process.pid) {
-      process.kill(pid, 0); // lanza si ya no existe
-      process.exit(0); // ya hay uno vivo
-    }
-  } catch {
-    /* no hay otro */
+if (identity['X-Session-Instance'] && !values.once) {
+  lockFile = lockOf(identity['X-Session-Instance']);
+  const other = lockHolder(lockFile);
+  if (other) {
+    if (!hookMode) console.log(`[intercom] Ya hay un vigilante activo para este chat (pid ${other}); no hace falta lanzar otro.`);
+    process.exit(0);
   }
   mkdirSync(dirname(lockFile), { recursive: true });
   writeFileSync(lockFile, String(process.pid));

@@ -37,7 +37,9 @@ inbox or reopens.
   come back, and pushed messages left unacknowledged make this session show as offline.
 - In Claude Code the watcher starts by itself through hooks (installed by `install.mjs`):
   in the terminal it wakes you with an `[Agent Intercom] Llegó un mensaje nuevo…` notice;
-  in VS Code/IDEs a SessionStart note asks you to launch it in your first reply — do it.
+  in VS Code/IDEs a SessionStart note asks you to launch it in your first reply, and a Stop hook asks you to
+  relaunch it when a turn ends without it running — do it without comment. If it reports that a watcher is already
+  active for this chat, do nothing.
 - If this session still is not receiving automatically (`get_node_status` →
   `session.offlineReason` is `sin_entrega_automatica`) and the user wants live messages, start
   the watcher with your Bash tool **in the background** (`run_in_background`), not with
