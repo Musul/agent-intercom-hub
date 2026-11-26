@@ -104,7 +104,7 @@ describe('chats con estado: nombre elegido por el usuario, entrega automática y
   const peerOf = async (key: string, id: string) => (await tool(b.base, key, 'obs', 'list_peers', { query: id.split('/')[1] })).data.peers.find((p: { id: string }) => p.id === id);
 
   before(async () => {
-    b = await boot({ ratePerMinute: 100_000, recentMs: 60_000, pushConfirmMs: 400 });
+    b = await boot({ ratePerMinute: 100_000, recentMs: 60_000, pushConfirmMs: 400, askNameDelayMs: 20 });
     ana = b.agent('ana', 'Ana Torres');
     beto = b.agent('beto', 'Beto');
   });
@@ -268,6 +268,25 @@ describe('chats con estado: nombre elegido por el usuario, entrega automática y
     assert.equal(p.offlineReason, 'sin_entrega_automatica');
     sinCanal.closeStream();
     await sinCanal.del();
+  });
+
+  it('hooks y plugins encuentran la sesión de su chat por X-Session-Instance (REST)', async () => {
+    const rest = (inst: string, tool: string, args: Record<string, unknown> = {}) =>
+      fetch(`${b.base}/v1/tools/${tool}`, { method: 'POST', headers: { Authorization: `Bearer ${ana}`, 'Content-Type': 'application/json', 'X-Session-Instance': inst }, body: JSON.stringify(args) });
+    assert.equal((await rest('no-existe', 'check_inbox')).status, 404);
+    const c = await new Chat(b.base, ana, { 'X-Session-Instance': 'hook-inst' }).init();
+    const unnamed = await rest('hook-inst', 'check_inbox');
+    assert.equal(unnamed.status, 409);
+    assert.equal(((await unnamed.json()) as { error: string }).error, 'session_unnamed');
+    await c.call('register_session', { name: 'con-hooks' });
+    await tool(b.base, beto, 'emisor', 'message_peer', { peer: 'ana/con-hooks', message: 'para el hook' });
+    const r = (await (await rest('hook-inst', 'check_inbox')).json()) as { result: { messages: Array<{ to: string; body: string }> } };
+    assert.equal(r.result.messages[0].to, 'ana/con-hooks');
+    assert.equal(r.result.messages[0].body, 'para el hook');
+    // otra clave (otro agente) no ve esa instancia
+    const ajena = await fetch(`${b.base}/v1/tools/check_inbox`, { method: 'POST', headers: { Authorization: `Bearer ${beto}`, 'X-Session-Instance': 'hook-inst' } });
+    assert.equal(ajena.status, 404);
+    await c.del();
   });
 
   it('Mcp-Session-Id ajeno o inventado → 404 (hay que reinicializar)', async () => {

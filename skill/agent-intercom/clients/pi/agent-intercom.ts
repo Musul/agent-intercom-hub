@@ -10,7 +10,7 @@
  *
  * Instalación: copia este archivo a ~/.pi/agent/extensions/agent-intercom.ts y define en tu entorno
  *   AGENT_INTERCOM_KEY=aik_…                     (tu clave; no la escribas en archivos)
- *   AGENT_INTERCOM_URL=https://intercom.example.com  (o el que guardó install-claude.mjs en ~/.agentintercom/config.json)
+ *   AGENT_INTERCOM_URL=https://intercom.example.com  (o el que guardó install.mjs en ~/.agentintercom/config.json)
  * Opcional: INTERCOM_SESSION=<nombre> para no preguntar. Comando /intercom-name <nombre> para cambiarlo.
  */
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
@@ -26,8 +26,15 @@ function savedUrl(): string {
     return '';
   }
 }
+function savedKey(): string {
+  try {
+    return readFileSync(join(homedir(), '.agentintercom', 'agent.key'), 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+const KEY = (process.env.AGENT_INTERCOM_KEY ?? savedKey()).trim();
 const BASE = (process.env.AGENT_INTERCOM_URL ?? process.env.INTERCOM_URL ?? savedUrl()).replace(/\/+$/, '').replace(/\/mcp$/, '');
-const KEY = process.env.AGENT_INTERCOM_KEY ?? '';
 const NAME_RE = /^[a-z0-9][a-z0-9._-]{0,47}$/;
 
 const slug = (s: string) =>

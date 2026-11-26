@@ -45,7 +45,14 @@ function savedUrl() {
   }
 }
 const base = (values.url ?? process.env.AGENT_INTERCOM_URL ?? process.env.INTERCOM_URL ?? savedUrl()).replace(/\/+$/, '').replace(/\/mcp$/, '');
-const key = values.key ?? process.env.AGENT_INTERCOM_KEY ?? '';
+function savedKey() {
+  try {
+    return readFileSync(join(homedir(), '.agentintercom', 'agent.key'), 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+const key = values.key ?? process.env.AGENT_INTERCOM_KEY ?? savedKey();
 const session = values.session ?? process.env.INTERCOM_SESSION ?? '';
 const preview = Math.max(0, Math.min(500, Number(values.preview ?? 0) || 0));
 const waitMs = Math.max(1000, Math.min(25000, Number(values['wait-ms'] ?? 25000) || 25000));

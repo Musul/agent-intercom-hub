@@ -12,6 +12,8 @@ export interface Config {
   maxConnectionsPerAgent: number;
   /** Días que se conservan las conexiones cerradas o inactivas. */
   connectionKeepDays: number;
+  /** Espera antes de pedir el nombre por formulario (un cliente que reconecta al arrancar no ve dos formularios). */
+  askNameDelayMs: number;
   /** Peticiones autenticadas por minuto y por clave. */
   ratePerMinute: number;
   /** Intentos fallidos de autenticación por minuto y por IP. */
@@ -66,6 +68,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, over: Partial<C
     pushConfirmMs: num(env.PUSH_CONFIRM_SECONDS, 300) * 1000,
     maxConnectionsPerAgent: num(env.MAX_CONNECTIONS_PER_AGENT, 500),
     connectionKeepDays: num(env.CONNECTION_KEEP_DAYS, 14),
+    askNameDelayMs: num(env.ASK_NAME_DELAY_MS, 1500),
     ratePerMinute: num(env.RATE_LIMIT_PER_MINUTE, 240),
     authFailPerMinute: num(env.AUTH_FAIL_PER_MINUTE, 30),
     maxBodyBytes: num(env.MAX_BODY_BYTES, 1024 * 1024),

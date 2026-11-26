@@ -21,7 +21,7 @@
 | `Mcp-Session-Id` | tras `initialize` | Id de la conexión (`con_…`). Desconocida, cerrada o de otro agente → `404` (el cliente debe reinicializar) |
 | `X-Session-Name` | no | Nombre fijo de la sesión: `^[a-z0-9][a-z0-9._-]{0,47}$`. Alternativa: `?session=<nombre>`. **Con conexión con estado y sin esta cabecera, el chat nace sin nombre y se lo pide al usuario.** Sin estado y sin cabecera → `default` |
 | `X-Session-Suggest` | no | Nombre sugerido para el formulario (si falta, la última carpeta de `X-Session-Cwd`) |
-| `X-Session-Instance` | no | Id estable del chat en el cliente: una conexión nueva con el mismo id recupera el nombre sin preguntar y cierra las anteriores |
+| `X-Session-Instance` | no | Id estable del chat en el cliente: una conexión nueva con el mismo id recupera el nombre sin preguntar y cierra las anteriores. **Sin estado** (REST, sin `X-Session-Name`), resuelve a la sesión de la conexión abierta de ese chat: así los hooks y plugins del mismo chat encuentran su buzón (`404 unknown_instance` si no hay chat abierto, `409 session_unnamed` si aún no tiene nombre) |
 | `X-Intercom-Channels` | no | `1`/`0`: el cliente (Claude Code) tiene o no el canal activo. Con `0` no se cuenta como entrega automática |
 | `X-Intercom-Listener` | no | `1` en un stream GET sin estado: es un oyente que avisa al agente (vigilante, extensión de pi) y cuenta como entrega automática |
 | `X-Session-Description` | no | Descripción inicial (máx. 300) |

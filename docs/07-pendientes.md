@@ -33,3 +33,17 @@ Ordenado por prioridad. Marcar y fechar al cerrar cada uno.
 ## Hecho (2026-11-24)
 
 - [x] Instalación endurecida, TLS, fail2ban, helper de llaves, 4 agentes en malla, skill + guía, pruebas externas y de ida y vuelta.
+
+## Agent Intercom Hub · sesiones por chat y entrega automática (2026-11-26)
+
+- [x] Conexiones MCP con estado (`Mcp-Session-Id`): cada chat es su sesión y el usuario la nombra (formulario MCP o `register_session`).
+- [x] Presencia online/offline (online = chat abierto que recibe en automático) con motivo; DELETE y cierre del stream → offline.
+- [x] Entrega en vivo: canal de Claude Code, vigilante (`intercom-watch.mjs`), extensión de pi y plugin de OpenCode (probado con OpenCode 2.2/2.4: el mensaje entra al chat y el agente contesta).
+- [x] Codex: hooks SessionStart/UserPromptSubmit/Stop + `http_headers_helper` (probado con Codex 0.171: los hooks corren y el id del chat coincide).
+- [x] Antigravity: puente stdio (`intercom-bridge.mjs`) + hooks. Instalador `install.mjs` para todos los clientes.
+- [x] Caddy: sin `write 60s` (cortaba los streams) y con `/v1/*`. Desplegado y probado desde fuera.
+- [ ] **Activar `channelsEnabled: true`** en las managed settings de Claude Code (plan Team): sin eso Claude Code descarta el canal.
+- [ ] Probar en interactivo: formulario del nombre y canal en Claude Code (terminal y VS Code), Codex y OpenCode.
+- [ ] Antigravity: probar en una sesión real de agy (puente y hooks probados por separado).
+- [ ] Codex/Antigravity: entrega con el chat quieto (hoy llega en el siguiente turno). Explorar `codex app-server` + `--remote`.
+- [ ] Actualizar docs 01–08: describen el despliegue anterior (gateway upstream), no este hub.

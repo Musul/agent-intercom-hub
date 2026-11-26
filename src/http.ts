@@ -109,12 +109,29 @@ function readBody(req: IncomingMessage, max: number): Promise<Buffer> {
   });
 }
 
+/** Nombre de la sesión de la conexión MCP más reciente y abierta de ese chat (X-Session-Instance) del agente. */
+function sessionOfInstance(hub: Hub, agentId: string, instance: string): string {
+  const c = one<{ session_id: string | null }>(
+    hub.db,
+    'SELECT session_id FROM connections WHERE agent_id = ? AND instance = ? AND closed_at IS NULL ORDER BY last_seen_at DESC LIMIT 1',
+    agentId, instance.slice(0, 100),
+  );
+  if (!c) throw new ToolError('unknown_instance', 'No hay un chat abierto con ese X-Session-Instance.', undefined, 404);
+  const s = c.session_id ? one<{ name: string }>(hub.db, 'SELECT name FROM sessions WHERE id = ?', c.session_id) : undefined;
+  if (!s) throw new ToolError('session_unnamed', 'Ese chat aún no tiene nombre de sesión.', undefined, 409);
+  return s.name;
+}
+
 async function buildCtx(hub: Hub, req: IncomingMessage, url: URL, auth: Auth, res: ServerResponse): Promise<Ctx> {
   const asked = (header(req, 'x-session-name') ?? url.searchParams.get('session') ?? undefined)?.toLowerCase();
   let name: string;
+  const instance = header(req, 'x-session-instance');
   if (auth.pinned) {
     if (asked && asked !== auth.pinned) throw new ToolError('session_pinned', `Esta clave está fijada a la sesión «${auth.pinned}»; no puede usar «${asked}».`);
     name = auth.pinned;
+  } else if (!asked && instance) {
+    // Un hook o plugin del mismo chat: la sesión es la que tiene la conexión MCP de ese chat (mismo X-Session-Instance).
+    name = sessionOfInstance(hub, auth.agent.id, instance);
   } else name = asked ?? 'default';
   const description = header(req, 'x-session-description');
   const harness = header(req, 'x-session-harness');
@@ -291,7 +308,10 @@ function openStream(hub: Hub, ctx: Ctx, req: IncomingMessage, res: ServerRespons
     }
   });
   if (sessionId) hub.deliver(sessionId, client); // lo que esperaba en el buzón (una sola vez por chat)
-  else if (ctx.conn) askName(hub, ctx.conn.id);
+  else if (ctx.conn) {
+    const id = ctx.conn.id;
+    setTimeout(() => askName(hub, id), hub.cfg.askNameDelayMs).unref();
+  }
 }
 
 const NULL_SESSION = (agentId: string, now: number): SessionRow => ({

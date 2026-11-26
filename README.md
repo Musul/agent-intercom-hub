@@ -76,6 +76,7 @@ Guía completa (varias sesiones, `curl`, migración desde el servidor actual): [
 | `INTERCOM_SCOPE` | `default` | Nombre del espacio de trabajo |
 | `PRESENCE_RECENT_SECONDS` | `120` | Cuánto cuenta un chat sin stream como abierto tras su última petición |
 | `PUSH_CONFIRM_SECONDS` | `300` | Un mensaje entregado en automático que no se recoge en este plazo deja la sesión `offline` (`sin_confirmar`) |
+| `ASK_NAME_DELAY_MS` | `1500` | Espera antes de pedir el nombre por formulario (un cliente que reconecta al arrancar no ve dos) |
 | `MAX_CONNECTIONS_PER_AGENT` / `CONNECTION_KEEP_DAYS` | `500` / `14` | Chats (conexiones MCP) que se guardan por agente y días que se conservan los cerrados |
 | `RATE_LIMIT_PER_MINUTE` | `240` | Peticiones por minuto y por clave |
 | `AUTH_FAIL_PER_MINUTE` | `30` | Claves falsas por minuto y por IP |
@@ -107,8 +108,9 @@ Guía completa (varias sesiones, `curl`, migración desde el servidor actual): [
 - **Entrega automática** (la sesión figura `online`): Claude Code lanzado con el canal
   (`--dangerously-load-development-channels server:agent_intercom`; en planes Team/Enterprise el admin debe permitir
   `channelsEnabled`), la extensión de pi, o el **vigilante** (`skill/agent-intercom/scripts/intercom-watch.mjs`) con el
-  Monitor de Claude Code. Codex, OpenCode y Antigravity no pueden despertar al agente: sus mensajes esperan a que revise
-  el buzón y figuran `offline` (`sin_entrega_automatica`).
+  Monitor de Claude Code, y el **plugin de OpenCode**. Codex y Antigravity no pueden despertar un chat quieto: sus
+  **hooks** entregan el mensaje al empezar, cuando el usuario escribe o cuando el agente termina un turno, y figuran
+  `offline` (`sin_entrega_automatica`). Antigravity se conecta por un puente stdio local (`intercom-bridge.mjs`).
 - Un solo nodo (SQLite, con copia en caliente: `intercom backup`). Alta disponibilidad real exigiría mover el almacenamiento
   a Postgres (reescritura de la capa de datos, que hoy es síncrona); no está hecho.
 - Los flujos de salida se consultan por sondeo (`read_output` con `afterSeq`); no hay SSE por flujo.

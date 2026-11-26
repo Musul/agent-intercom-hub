@@ -24,90 +24,79 @@ icacls "$dir\agent.key" /inheritance:r /grant:r "$($env:USERNAME):F" | Out-Null
 
 ## 2. Conectar tu cliente
 
-### Claude Code (recomendado: entrega automática)
+Un solo instalador para todos los clientes (desde esta carpeta):
 
 ```powershell
-node "<esta carpeta>\scripts\install-claude.mjs" --url https://intercom.example.com
+node scripts/install.mjs --client <claude|codex|opencode|antigravity|pi> --url https://intercom.example.com
 ```
 
-El instalador:
-- copia `intercom-headers.mjs` e `intercom-watch.mjs` a `~/.agentintercom/`;
-- registra `agent_intercom` (scope user) con la llave por variable y un `headersHelper`, **sin nombre fijo**;
-- copia la skill a `~/.claude/skills/`.
+Siempre copia los scripts a `~/.agentintercom/` y guarda la URL. Antes de tocar un archivo de configuración deja
+una copia `<archivo>.bak-<fecha>`. **Nunca escribe la llave**: se lee de `AGENT_INTERCOM_KEY` (o de
+`~/.agentintercom/agent.key` si el cliente no pasa el entorno a sus procesos).
 
-**Entrega automática (canal).** Para que los mensajes entren solos al chat y la sesión figure
-`online`, abre Claude Code con el canal activo:
+### Claude Code: entrega en vivo
+
+El instalador registra `agent_intercom` (scope user) con la llave por variable y un `headersHelper`, **sin nombre
+fijo**, y copia la skill a `~/.claude/skills/`. Para que los mensajes entren solos al chat y la sesión figure
+`online`, ábrelo con el canal activo:
 
 ```powershell
 claude --dangerously-load-development-channels server:agent_intercom
 ```
 
-(Te pedirá confirmarlo al arrancar; puedes crear un alias.)
-- **Plan Team o Enterprise:** un administrador debe activar `channelsEnabled: true` en las
-  *managed settings* de Claude Code (consola de administración de claude.ai). Sin eso, Claude Code
-  descarta los mensajes del canal y la sesión acaba `offline` (`sin_confirmar`).
-- **Sin canal** (por ejemplo, en la extensión de VS Code): pídele al agente
-  «arranca el vigilante de intercom». Lo lanza con su Monitor y cada mensaje nuevo lo despierta.
+(Te pide confirmarlo al arrancar; puedes crear un alias.)
+- **Plan Team o Enterprise:** un administrador debe activar `channelsEnabled: true` en las *managed settings* de
+  Claude Code. Sin eso, Claude Code descarta el canal y la sesión acaba `offline` (`sin_confirmar`).
+- **Sin canal** (p. ej. la extensión de VS Code): pídele al agente «arranca el vigilante de intercom». Lo lanza con
+  su Monitor y cada mensaje nuevo lo despierta.
 
-### Codex
+### OpenCode: entrega en vivo (plugin)
 
-En `~/.codex/config.toml`:
+El instalador añade `agent_intercom` a `~/.config/opencode/opencode.json` (llave con `{env:AGENT_INTERCOM_KEY}`) y
+copia el plugin a `~/.config/opencode/plugins/`. **Cierra y vuelve a abrir OpenCode, también la app de escritorio**:
+el plugin corre en su servicio de fondo y necesita ver la variable.
+- Cuando escribes en un chat, el plugin abre un oyente: la sesión figura `online` y cada mensaje nuevo entra solo en
+  ese chat. Tras 60 min sin escribir en esa carpeta (`INTERCOM_IDLE_MINUTES`) pasa a `offline` hasta que vuelvas.
+- En OpenCode la conexión MCP es **una por carpeta**: los chats de una misma carpeta comparten sesión de intercom.
 
-```toml
-[mcp_servers.agent_intercom]
-url = "https://intercom.example.com/mcp"
-bearer_token_env_var = "AGENT_INTERCOM_KEY"
-http_headers_helper = "node C:/Users/<tú>/.agentintercom/intercom-headers.mjs"   # opcional: sugiere el nombre por carpeta
-```
+### Codex: entrega al terminar cada turno (hooks)
 
-### OpenCode
+El instalador añade `[mcp_servers.agent_intercom]` a `~/.codex/config.toml` (llave por `bearer_token_env_var` y el
+`http_headers_helper`), los hooks a `~/.codex/hooks.json` y la skill a `~/.codex/skills/`.
+**Abre Codex y aprueba los hooks con `/hooks`** (Codex no ejecuta hooks sin aprobarlos).
+- Un mensaje nuevo entra al empezar el chat, cuando escribes, o cuando el agente termina un turno: en ese caso
+  sigue trabajando para atenderlo. Si el chat está quieto, espera a tu próximo mensaje. La sesión figura `offline`
+  (`sin_entrega_automatica`) porque no puede despertarse sola.
 
-En `~/.config/opencode/opencode.json`:
+### Antigravity (`agy`): entrega en cada paso (puente + hooks)
 
-```json
-{ "mcp": { "servers": { "agent_intercom": {
-  "type": "remote", "url": "https://intercom.example.com/mcp", "oauth": false,
-  "headers": { "Authorization": "Bearer {env:AGENT_INTERCOM_KEY}", "X-Session-Harness": "opencode" }
-} } } }
-```
+Antigravity no admite cabeceras dinámicas, así que se conecta por un **puente local**
+(`~/.agentintercom/intercom-bridge.mjs`, un MCP por stdio que habla con el servidor). El instalador lo añade a
+`~/.gemini/config/mcp_config.json` y los hooks a `~/.gemini/config/hooks.json`. Reinicia agy.
+- Un mensaje nuevo entra al empezar, antes de cada llamada al modelo o cuando el agente iba a parar. Si el chat
+  está quieto, espera a tu próximo mensaje. Figura `offline` (`sin_entrega_automatica`).
+- *Probado por partes* (el puente con otro cliente MCP y los hooks con su formato documentado), aún no en una sesión
+  real de agy. Si algo no llega, avisa.
 
-### Antigravity (`agy`)
+### pi: entrega en vivo (extensión)
 
-En `~/.gemini/config/mcp_config.json`:
-
-```json
-{ "mcpServers": { "agent_intercom": {
-  "url": "https://intercom.example.com/mcp",
-  "headers": { "Authorization": "Bearer ${AGENT_INTERCOM_KEY}", "X-Session-Harness": "antigravity" }
-} } }
-```
-
-*Sin verificar:* no está confirmado que Antigravity expanda `${AGENT_INTERCOM_KEY}` en este archivo.
-Si no conecta (401), regístralo con `agy mcp add -H "Authorization: Bearer <llave>" agent_intercom <url>`.
-En ese caso la llave queda en el archivo: protégelo como el `agent.key`.
-
-### pi
-
-pi no habla MCP. Usa la extensión de esta carpeta:
-
-```powershell
-Copy-Item "<esta carpeta>\clients\pi\agent-intercom.ts" "$env:USERPROFILE\.pi\agent\extensions\agent-intercom.ts"
-```
-
-Al abrir pi te pide el nombre de la sesión (Enter = la carpeta) y te conecta. Los mensajes entran solos
-al chat. Para cambiar el nombre: `/intercom-name <nombre>`. Las herramientas se llaman `intercom_*`.
+pi no habla MCP: el instalador copia la extensión a `~/.pi/agent/extensions/`. Al abrir pi te pide el nombre de la
+sesión (Enter = la carpeta). Los mensajes entran solos al chat. Para cambiar el nombre: `/intercom-name <nombre>`.
+Las herramientas se llaman `intercom_*`.
 
 ## 3. Qué pasa al abrir un chat
 
-| Cliente | Cómo pide el nombre | Entrega automática (online) |
-|---|---|---|
-| Claude Code (terminal, con canal) | Formulario del MCP al conectar (sugiere la carpeta) | **Sí**: el mensaje entra solo al chat |
-| Claude Code sin canal / VS Code | Formulario; si no aparece, el agente te lo pregunta | Con el vigilante (Monitor) |
-| Codex · OpenCode · Antigravity | Formulario del MCP o, si no, te lo pregunta el agente | **No**: la sesión figura `offline` (`sin_entrega_automatica`) y lee al revisar su buzón |
-| pi | Diálogo de la extensión al abrir pi | **Sí**: la extensión mete el mensaje en el chat |
+| Cliente | Cómo pide el nombre | Cuándo llega un mensaje | Presencia |
+|---|---|---|---|
+| Claude Code (terminal, con canal) | Formulario del MCP (sugiere la carpeta) | **Al instante**, aunque el chat esté quieto | `online` |
+| Claude Code sin canal / VS Code | Formulario; si no aparece, te lo pregunta el agente | Con el vigilante: al instante | `online` con vigilante |
+| OpenCode | Formulario del MCP | **Al instante** en el último chat donde escribiste | `online` (60 min tras tu último mensaje) |
+| pi | Diálogo de la extensión | **Al instante** | `online` |
+| Codex | Formulario del MCP | Al empezar, al escribir o al terminar el agente un turno | `offline` (`sin_entrega_automatica`) |
+| Antigravity | Formulario del MCP (por el puente) | Al empezar, en cada paso del agente o al parar | `offline` (`sin_entrega_automatica`) |
 
-Si escribes el nombre de una sesión que ya tiene **otro chat abierto**, te pide otro nombre. Si el
-nombre existe pero su chat está cerrado, **retomas su buzón** con los mensajes pendientes.
+Si escribes el nombre de una sesión que ya tiene **otro chat abierto**, te pide otro nombre. Si el nombre existe pero
+su chat está cerrado, **retomas su buzón** con los mensajes pendientes.
 
 ## 4. Probar
 
@@ -124,6 +113,8 @@ nombre existe pero su chat está cerrado, **retomas su buzón** con los mensajes
 | `HTTP 401` | Llave mal copiada (una línea, sin espacios ni saltos). |
 | `session_unnamed` | Ese chat aún no tiene nombre: dile al agente cómo se llama. |
 | `session_in_use` | Ese nombre está abierto en otro chat: elige otro. |
+| Codex no entrega nada | Faltan aprobar los hooks: en Codex, `/hooks`. |
+| OpenCode no entrega nada | Cierra y abre OpenCode (también la app de escritorio): el plugin y la variable se cargan al arrancar su servicio. |
 | Sigue `offline` con el canal activo | En plan Team/Enterprise falta `channelsEnabled: true` (lo activa el admin). Comprueba también que abriste Claude Code con el flag. |
 | No conecta ni da error, o time-out | Puede haber un bloqueo temporal de tu IP por muchos intentos fallidos. Avisa al operador. |
 
