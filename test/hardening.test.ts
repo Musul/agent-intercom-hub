@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -365,7 +365,15 @@ describe('vigilante (watch) y copia de seguridad', () => {
       w.child.kill();
     }
 
-    // contexto de SessionStart: solo en IDE (VS Code, JetBrains, escritorio)
+    // En el IDE el modo en vivo es OPCIONAL (relanzar el vigilante cada turno gasta tokens): sin `ideLive` no pide nada
+    // y la entrega la hace intercom-hook.mjs al escribir el usuario y al terminar el turno.
+    const off = run(['--hook-context'], 'claude-vscode');
+    await waitFor(() => off.st.code !== null);
+    assert.equal(off.st.out, '');
+    mkdirSync(join(home, '.agentintercom'), { recursive: true });
+    writeFileSync(join(home, '.agentintercom', 'config.json'), JSON.stringify({ ideLive: true }));
+
+    // con ideLive, contexto de SessionStart: solo en IDE (VS Code, JetBrains, escritorio)
     const vs = run(['--hook-context'], 'claude-vscode');
     await waitFor(() => vs.st.code !== null);
     assert.match(JSON.parse(vs.st.out).hookSpecificOutput.additionalContext, /--auto --exit-on-message/);

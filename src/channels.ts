@@ -1,4 +1,4 @@
-import { pendingCount } from './inbox.ts';
+import { enqueueNotices } from './inbox.ts';
 import { all, audit, labelOf, one, run, type Ctx } from './store.ts';
 import { CHANNEL_NAME_RE, clamp, clip, iso, newId, ToolError } from './util.ts';
 
@@ -82,29 +82,24 @@ export function postChannel(ctx: Ctx, ref: string, body: string, threadId?: stri
   const subs = hub.tx(() => {
     run(hub.db, 'INSERT INTO channel_posts (id, channel_id, thread_id, author_session, author_label, body, created_at, idempotency_key) VALUES (?,?,?,?,?,?,?,?)',
       postId, c.id, threadId ?? null, session.id, labelOf(session), body, now, idempotencyKey ?? null);
-    const subscribed = all<{ session_id: string }>(
+    const subscribed = all<{ id: string; inbound: string; wake_per_hour: number | null; allow_from: string }>(
       hub.db,
-      `SELECT cs.session_id FROM channel_subs cs JOIN sessions s ON s.id = cs.session_id
+      `SELECT s.id, s.inbound, s.wake_per_hour, s.allow_from FROM channel_subs cs JOIN sessions s ON s.id = cs.session_id
        WHERE cs.channel_id = ? AND cs.session_id != ? AND s.retired_at IS NULL`,
       c.id, session.id,
     );
-    // Un buzón lleno no recibe el aviso (el post sí queda en el canal): así un canal no sirve para inundar a nadie.
-    const targets = subscribed.filter((t) => pendingCount(ctx, t.session_id) < hub.cfg.maxPendingPerSession);
-    const skipped = subscribed.length - targets.length;
-    for (const t of targets) {
-      run(
-        hub.db,
-        `INSERT INTO messages (id, kind, from_session, from_label, to_session, mode, body, context, channel_id, thread_id, state, created_at)
-         VALUES (?, 'channel', ?, ?, ?, 'notify', ?, ?, ?, ?, 'queued', ?)`,
-        newId('msg'), session.id, labelOf(session), t.session_id, `[#${c.name}] ${clip(body, 500)}`,
-        JSON.stringify([{ kind: 'channel_post', title: `#${c.name}`, uri: `intercom://channels/${c.name}/posts/${postId}` }]),
-        c.id, threadId ?? postId, now,
-      );
-    }
-    return { targets, skipped };
+    // Un buzón lleno (o una sesión en «off») no recibe el aviso (el post sí queda en el canal): un canal no sirve para inundar a nadie.
+    return enqueueNotices(
+      hub, { sessionId: session.id, label: labelOf(session) }, subscribed,
+      {
+        kind: 'channel', body: `[#${c.name}] ${clip(body, 500)}`, channelId: c.id, threadId: threadId ?? postId,
+        context: [{ kind: 'channel_post', title: `#${c.name}`, uri: `intercom://channels/${c.name}/posts/${postId}` }],
+      },
+      now,
+    );
   });
-  for (const t of subs.targets) hub.wake(t.session_id);
-  return { postId, channelId: c.id, threadId: threadId ?? postId, notified: subs.targets.length, ...(subs.skipped ? { skippedFullInboxes: subs.skipped } : {}) };
+  for (const t of subs.wake) hub.wake(t.id, t.push);
+  return { postId, channelId: c.id, threadId: threadId ?? postId, notified: subs.wake.length, ...(subs.skipped ? { skippedFullInboxes: subs.skipped } : {}) };
 }
 
 export function readChannel(ctx: Ctx, args: { channelId?: string; threadId?: string; query?: string; limit?: number; before?: string }) {

@@ -1,5 +1,8 @@
-import { existsSync, statSync, unlinkSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync, unlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { MIGRATION_COUNT, openDb } from './db.ts';
 import { purgeConnections } from './conns.ts';
 import { generateKey, hashKey } from './keys.ts';
 import { all, audit, labelOf, one, run, type AgentRow, type Hub } from './store.ts';
@@ -115,4 +118,89 @@ export function backup(hub: Hub, file: string): { file: string; bytes: number } 
     check.close();
   }
   return { file, bytes: statSync(file).size };
+}
+
+/** Comprueba una copia sin tocarla: integridad, versión del esquema y cuántas filas tiene cada tabla principal. */
+export function verifyBackup(file: string) {
+  if (!existsSync(file)) throw new ToolError('file_missing', `No existe «${file}».`);
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    const integrity = (db.prepare('PRAGMA integrity_check').get() as { integrity_check: string }).integrity_check;
+    const version = (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
+    if (integrity !== 'ok') throw new ToolError('backup_corrupt', `La copia no pasó la comprobación: ${integrity}`);
+    if (version > MIGRATION_COUNT) throw new ToolError('backup_newer', `La copia es de una versión más nueva del servidor (esquema ${version} > ${MIGRATION_COUNT}).`);
+    const count = (t: string) => {
+      try {
+        return (db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get() as { n: number }).n;
+      } catch {
+        return null;
+      }
+    };
+    return { file, bytes: statSync(file).size, schema: version, integrity, agents: count('agents'), keys: count('api_keys'), sessions: count('sessions'), messages: count('messages'), tasks: count('tasks') };
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Ensayo de restauración SIN tocar producción: copia la copia a una carpeta temporal, la abre como lo haría el servidor
+ * (aplicando las migraciones pendientes) y comprueba que se puede leer. Devuelve lo que encontró.
+ */
+export function testRestore(file: string) {
+  const info = verifyBackup(file);
+  const dir = mkdtempSync(join(tmpdir(), 'intercom-restore-'));
+  try {
+    const target = join(dir, 'intercom.db');
+    copyFileSync(file, target);
+    const db = openDb(target);
+    try {
+      const sessions = (db.prepare('SELECT COUNT(*) AS n FROM sessions').get() as { n: number }).n;
+      const pending = (db.prepare(`SELECT COUNT(*) AS n FROM messages WHERE state IN ('queued','delivered')`).get() as { n: number }).n;
+      const schema = (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
+      return { ...info, restoredSchema: schema, sessionsReadable: sessions, pendingMessages: pending, ok: true };
+    } finally {
+      db.close();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Restaura una copia sobre la base (CON EL SERVIDOR PARADO). Sin `force` no pisa una base existente; con él, la
+ * actual se aparta como <base>.pre-restore-<fecha> (con su -wal y -shm) por si hay que volver atrás.
+ */
+export function restoreBackup(file: string, target: string, force = false) {
+  const info = verifyBackup(file);
+  if (existsSync(target)) {
+    if (!force) throw new ToolError('target_exists', `«${target}» ya existe. Para el servidor y repite con --force (la base actual se guarda aparte).`);
+    const stamp = new Date().toISOString().replace(/\D/g, '').slice(0, 14);
+    for (const suffix of ['', '-wal', '-shm']) if (existsSync(target + suffix)) renameSync(target + suffix, `${target}.pre-restore-${stamp}${suffix}`);
+  }
+  mkdirSync(join(target, '..'), { recursive: true });
+  copyFileSync(file, target);
+  const db = openDb(target);
+  db.close();
+  return { restored: target, from: file, schema: info.schema };
+}
+
+/** Copia programada (BACKUP_DIR): intercom-AAAAMMDD-HHMMSS.db y se conservan las BACKUP_KEEP más nuevas. */
+export function scheduledBackup(hub: Hub, now = Date.now()) {
+  const dir = hub.cfg.backupDir;
+  if (!dir) throw new ToolError('backup_disabled', 'BACKUP_DIR no está definido.');
+  mkdirSync(dir, { recursive: true });
+  const stamp = new Date(now).toISOString().replace(/\D/g, '').slice(0, 14);
+  const file = join(dir, `intercom-${stamp.slice(0, 8)}-${stamp.slice(8)}.db`);
+  const r = backup(hub, file);
+  const old = readdirSync(dir).filter((f) => /^intercom-\d{8}-\d{6}\.db$/.test(f)).sort().reverse().slice(hub.cfg.backupKeep);
+  for (const f of old) rmSync(join(dir, f), { force: true });
+  return { ...r, pruned: old.length };
+}
+
+/** La copia más nueva de BACKUP_DIR (para /healthz y el monitoreo). */
+export function lastBackup(hub: Hub): { file: string; at: number } | null {
+  const dir = hub.cfg.backupDir;
+  if (!dir || !existsSync(dir)) return null;
+  const f = readdirSync(dir).filter((x) => /^intercom-\d{8}-\d{6}\.db$/.test(x)).sort().at(-1);
+  return f ? { file: join(dir, f), at: statSync(join(dir, f)).mtimeMs } : null;
 }

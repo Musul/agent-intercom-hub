@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
-import { addAgent, addKey, backup, disableAgent, listAgents, listKeys, listSessions, maintenance, retireSession, revokeKey } from './admin.ts';
+import { addAgent, addKey, backup, disableAgent, listAgents, listKeys, listSessions, maintenance, restoreBackup, retireSession, revokeKey, scheduledBackup, testRestore, verifyBackup } from './admin.ts';
 import { loadConfig } from './config.ts';
 import { openDb } from './db.ts';
 import { answerQuestion, listQuestions } from './files.ts';
+import { createInvite, listInvites, revokeInvite } from './invites.ts';
+import { createWebLink, feed } from './web.ts';
 import { Hub, all, one } from './store.ts';
 import { ToolError } from './util.ts';
 
@@ -22,8 +24,18 @@ const HELP = `intercom — administración de agent-intercom-hub (opera directam
   session:retire <agente/sesion>
   question:list [--state open|answered]
   question:answer <id> "respuesta" [--by quien]
+  invite:create <agente> [--label x] [--hours 48] [--url https://…]   enlace de un solo uso: la persona ejecuta
+                                                       install.mjs --join <enlace> y su instalador recibe la llave
+  invite:list
+  invite:revoke <id>
+  web:link <agente> [--url https://…]                  enlace de un solo uso (10 min) al panel web
+  feed [--limit 50] [--follow]                         últimos mensajes entre sesiones (con --follow, en vivo)
   maintenance                                          limpia mensajes cerrados, adjuntos y auditoría antiguos
   backup <archivo>                                     copia consistente y verificada, en caliente (no sobrescribe)
+  backup:now                                           copia en BACKUP_DIR con nombre fechado (y borra las antiguas)
+  backup:verify <copia>                                integridad, versión de esquema y filas, sin tocar nada
+  backup:test <copia>                                  ENSAYO de restauración en una carpeta temporal (no toca producción)
+  restore <copia> [--force]                            restaura sobre INTERCOM_DB (servidor PARADO; --force aparta la actual)
   stats
 `;
 
@@ -38,6 +50,11 @@ const { positionals, values } = parseArgs({
     state: { type: 'string' },
     by: { type: 'string' },
     json: { type: 'boolean' },
+    hours: { type: 'string' },
+    url: { type: 'string' },
+    limit: { type: 'string' },
+    follow: { type: 'boolean' },
+    force: { type: 'boolean' },
   },
 });
 const [cmd, ...args] = positionals;
@@ -101,6 +118,53 @@ try {
       answerQuestion(hub, need(args[0], '<id>'), need(args[1], '"respuesta"'), values.by ?? 'cli');
       console.log('Respuesta enviada al buzón de la sesión.');
       break;
+    case 'invite:create': {
+      const inv = createInvite(hub, need(args[0], '<agente>'), {
+        ...(values.label ? { label: values.label } : {}),
+        ...(values.hours ? { hours: Number(values.hours) } : {}),
+        ...(values.url ? { origin: values.url } : {}),
+      });
+      console.log(`Invitación ${inv.inviteId} para ${inv.agentId} (caduca ${inv.expiresAt}; sirve UNA vez).`);
+      if (inv.url) console.log(`\nEnlace (mándalo por un canal privado):\n\n${inv.url}\n\nLa persona ejecuta, desde la carpeta skill/agent-intercom:\n  node scripts/install.mjs --client claude --join "${inv.url}"\n`);
+      else console.log(`\nToken: ${inv.token}\n(Define PUBLIC_URL o pasa --url https://<servidor> para obtener el enlace completo: <url>/join#<token>)\n`);
+      break;
+    }
+    case 'invite:list':
+      show(listInvites(hub));
+      break;
+    case 'invite:revoke':
+      revokeInvite(hub, need(args[0], '<id>'));
+      console.log('Invitación anulada.');
+      break;
+    case 'web:link': {
+      const origin = values.url ?? cfg.publicUrl;
+      if (!origin) throw new ToolError('bad_request', 'Falta la URL pública: --url https://<servidor> o PUBLIC_URL.');
+      const agentId = need(args[0], '<agente>');
+      if (!one(hub.db, 'SELECT 1 FROM agents WHERE id = ? AND disabled_at IS NULL', agentId)) throw new ToolError('unknown_agent', `No existe el agente «${agentId}».`);
+      const l = createWebLink(hub, agentId, origin.replace(/\/+$/, ''));
+      console.log(`Enlace al panel para ${agentId} (un solo uso, caduca ${l.expiresAt}):\n${l.url}`);
+      break;
+    }
+    case 'feed': {
+      const line = (m: ReturnType<typeof feed>[number]) =>
+        `${m.createdAt?.slice(5, 19).replace('T', ' ')}  ${m.from} → ${m.to}  [${m.kindLabel}${m.wake ? '' : ` · retenido: ${m.heldReason ?? '—'}`} · ${m.state}]  ${m.body.replace(/\s+/g, ' ').slice(0, 140)}`;
+      let last = 0;
+      for (const m of feed(hub, Number(values.limit ?? 50) || 50)) {
+        console.log(line(m));
+        last = m.rowid;
+      }
+      if (values.follow) {
+        console.log('— siguiendo (Ctrl+C para salir) —');
+        for (;;) {
+          await new Promise((r) => setTimeout(r, 2000));
+          for (const m of feed(hub, 200, last)) {
+            console.log(line(m));
+            last = m.rowid;
+          }
+        }
+      }
+      break;
+    }
     case 'maintenance':
       console.log(maintenance(hub));
       break;
@@ -108,6 +172,26 @@ try {
       const r = backup(hub, need(args[0], '<archivo destino>'));
       console.log(`Copia consistente y verificada: ${r.file} (${r.bytes} bytes). Se puede hacer con el servidor en marcha.`);
       break;
+    }
+    case 'backup:now': {
+      const r = scheduledBackup(hub);
+      console.log(`Copia: ${r.file} (${r.bytes} bytes)${r.pruned ? `; ${r.pruned} antiguas borradas` : ''}.`);
+      break;
+    }
+    case 'backup:verify':
+      show(verifyBackup(need(args[0], '<copia>')));
+      break;
+    case 'backup:test': {
+      const r = testRestore(need(args[0], '<copia>'));
+      show(r);
+      console.log('Ensayo de restauración correcto: la copia se abre, migra y se lee. Producción no se tocó.');
+      break;
+    }
+    case 'restore': {
+      hub.db.close();
+      const r = restoreBackup(need(args[0], '<copia>'), cfg.dbPath, values.force === true);
+      console.log(`Restaurada ${r.from} → ${r.restored} (esquema ${r.schema}). Arranca el servidor.`);
+      process.exit(0);
     }
     case 'stats':
       show({
@@ -130,5 +214,5 @@ try {
     process.exitCode = 1;
   } else throw e;
 } finally {
-  hub.db.close();
+  if (hub.db.isOpen) hub.db.close();
 }

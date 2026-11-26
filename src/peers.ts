@@ -5,6 +5,8 @@ export interface SessionMeta {
   description?: string | undefined;
   harness?: string | undefined;
   cwd?: string | undefined;
+  /** Etiquetas que propone el cliente (repo, rama): solo rellenan si la sesión no tiene ninguna. */
+  tags?: string[] | undefined;
 }
 
 const TOUCH_EVERY_MS = 5000;
@@ -24,8 +26,8 @@ export function ensureSession(hub: Hub, agent: AgentRow, name: string, meta: Ses
     const id = newId('ses');
     run(
       hub.db,
-      `INSERT INTO sessions (id, agent_id, name, description, harness, cwd, created_at, last_seen_at) VALUES (?,?,?,?,?,?,?,?)`,
-      id, agent.id, name, meta.description ?? '', meta.harness ?? null, meta.cwd ?? null, now, now,
+      `INSERT INTO sessions (id, agent_id, name, description, harness, cwd, created_at, last_seen_at, tags) VALUES (?,?,?,?,?,?,?,?,?)`,
+      id, agent.id, name, meta.description ?? '', meta.harness ?? null, meta.cwd ?? null, now, now, JSON.stringify(meta.tags ?? []),
     );
     audit(hub, agent.id, id, 'session_created', name);
     row = one<SessionRow>(hub.db, 'SELECT * FROM sessions WHERE id = ?', id)!;
@@ -37,12 +39,13 @@ export function ensureSession(hub: Hub, agent: AgentRow, name: string, meta: Ses
   const description = row.description === '' ? meta.description : undefined;
   const harness = row.harness == null ? meta.harness : undefined;
   const cwd = row.cwd == null ? meta.cwd : undefined;
-  const fills = description !== undefined || harness !== undefined || cwd !== undefined;
+  const tags = row.tags === '[]' && meta.tags?.length ? JSON.stringify(meta.tags) : undefined;
+  const fills = description !== undefined || harness !== undefined || cwd !== undefined || tags !== undefined;
   if (now - last > TOUCH_EVERY_MS || fills || row.retired_at) {
     run(
       hub.db,
-      `UPDATE sessions SET last_seen_at = ?, retired_at = NULL, description = ?, harness = ?, cwd = ? WHERE id = ?`,
-      now, description ?? row.description, harness ?? row.harness, cwd ?? row.cwd, row.id,
+      `UPDATE sessions SET last_seen_at = ?, retired_at = NULL, description = ?, harness = ?, cwd = ?, tags = ? WHERE id = ?`,
+      now, description ?? row.description, harness ?? row.harness, cwd ?? row.cwd, tags ?? row.tags, row.id,
     );
     hub.lastTouch.set(row.id, now);
     row = one<SessionRow>(hub.db, 'SELECT * FROM sessions WHERE id = ?', row.id)!;

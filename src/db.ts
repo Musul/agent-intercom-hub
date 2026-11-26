@@ -199,7 +199,62 @@ const MIGRATIONS: string[] = [
   ALTER TABLE messages ADD COLUMN pushed_at INTEGER;
   ALTER TABLE messages ADD COLUMN pushed_conn TEXT;
   `,
+  // 4: equipo con seats separados. Política de entrada por sesión (quién y cuántas veces puede despertarla), freno de
+  //    bucles entre dos sesiones, tareas con etiquetas, preguntas a una persona concreta, panel web e invitaciones.
+  `
+  ALTER TABLE sessions ADD COLUMN inbound TEXT NOT NULL DEFAULT 'auto';
+  ALTER TABLE sessions ADD COLUMN wake_per_hour INTEGER;
+  ALTER TABLE sessions ADD COLUMN allow_from TEXT NOT NULL DEFAULT '[]';
+  ALTER TABLE messages ADD COLUMN wake INTEGER NOT NULL DEFAULT 1;
+  ALTER TABLE messages ADD COLUMN held_reason TEXT;
+  CREATE INDEX messages_wake ON messages (to_session, wake, created_at);
+  CREATE INDEX messages_pair ON messages (from_session, to_session, created_at);
+
+  CREATE TABLE pair_guard (
+    a         TEXT NOT NULL,
+    b         TEXT NOT NULL,
+    count     INTEGER NOT NULL DEFAULT 0,
+    last_at   INTEGER NOT NULL,
+    paused_at INTEGER,
+    PRIMARY KEY (a, b)
+  );
+
+  ALTER TABLE tasks ADD COLUMN tags TEXT NOT NULL DEFAULT '[]';
+  ALTER TABLE tasks ADD COLUMN created_session TEXT;
+  ALTER TABLE questions ADD COLUMN person TEXT;
+
+  CREATE TABLE web_sessions (
+    id           TEXT PRIMARY KEY,
+    agent_id     TEXT NOT NULL REFERENCES agents(id),
+    token_hash   TEXT NOT NULL UNIQUE,
+    created_at   INTEGER NOT NULL,
+    expires_at   INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE web_links (
+    token_hash TEXT PRIMARY KEY,
+    agent_id   TEXT NOT NULL REFERENCES agents(id),
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    used_at    INTEGER
+  );
+
+  CREATE TABLE invites (
+    id         TEXT PRIMARY KEY,
+    agent_id   TEXT NOT NULL REFERENCES agents(id),
+    token_hash TEXT NOT NULL UNIQUE,
+    label      TEXT,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    used_at    INTEGER,
+    key_id     TEXT
+  );
+  `,
 ];
+
+/** Versión de esquema que conoce este servidor (una copia más nueva no se restaura). */
+export const MIGRATION_COUNT = MIGRATIONS.length;
 
 export function openDb(path: string): DatabaseSync {
   if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });

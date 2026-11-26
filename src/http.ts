@@ -5,34 +5,15 @@ import { handleRpc, SUPPORTED } from './mcp.ts';
 import { fetchAttachment, storeAttachment } from './files.ts';
 import { askName, closeConnection, createConnection, getConnection, isClaudeCode, touchConnection } from './conns.ts';
 import { ensureSession, type SessionMeta } from './peers.ts';
+import { takeHeld } from './inbox.ts';
+import { humanTurn } from './policy.ts';
+import { redeemInvite } from './invites.ts';
+import { lastBackup } from './admin.ts';
+import { handleWeb, originOf } from './web.ts';
 import { one, run, type AgentRow, type ConnRow, type Ctx, type Hub, type SessionRow, type StreamClient } from './store.ts';
 import { callTool, TOOLS } from './tools.ts';
-import { ToolError } from './util.ts';
-
-/** Contador por ventana de un minuto (límites de peticiones y de intentos de autenticación fallidos). */
-class Counter {
-  private m = new Map<string, { start: number; n: number }>();
-  /** Devuelve los segundos que faltan para poder reintentar si se pasó el límite; 0 si todo bien. */
-  hit(key: string, limit: number, now = Date.now()): number {
-    if (this.m.size > 10_000) for (const [k, v] of this.m) if (now - v.start > 60_000) this.m.delete(k);
-    let e = this.m.get(key);
-    if (!e || now - e.start >= 60_000) this.m.set(key, (e = { start: now, n: 0 }));
-    e.n++;
-    return e.n > limit ? Math.max(1, Math.ceil((e.start + 60_000 - now) / 1000)) : 0;
-  }
-  over(key: string, limit: number, now = Date.now()): number {
-    const e = this.m.get(key);
-    return e && now - e.start < 60_000 && e.n >= limit ? Math.max(1, Math.ceil((e.start + 60_000 - now) / 1000)) : 0;
-  }
-}
-
-const SEC_HEADERS = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' };
-
-function sendJson(res: ServerResponse, status: number, body: unknown, extra: Record<string, string> = {}): void {
-  const data = JSON.stringify(body);
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(data), ...SEC_HEADERS, ...extra });
-  res.end(data);
-}
+import { norm, ToolError } from './util.ts';
+import { Counter, header, readBody, SEC_HEADERS, sendJson } from './httputil.ts';
 
 const DRAIN_MAX = 1024 * 1024;
 /** Para un 413 o un 429 de subida: se deja terminar de llegar un cuerpo grande (con tope y plazo) para que el cliente lea el error en vez de un reset. */
@@ -78,37 +59,6 @@ function authenticate(hub: Hub, req: IncomingMessage): Auth | null {
   return { agent, keyId: key_id, pinned: pinned_session };
 }
 
-const header = (req: IncomingMessage, name: string): string | undefined => {
-  const v = req.headers[name];
-  return ((Array.isArray(v) ? v[0] : v) ?? '').trim() || undefined;
-};
-
-function readBody(req: IncomingMessage, max: number): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    if (Number(req.headers['content-length'] ?? 0) > max) return reject(new ToolError('payload_too_large', `El cuerpo pasa de ${max} bytes.`, undefined, 413));
-    const declared = Number(req.headers['content-length']);
-    const whole = Number.isInteger(declared) && declared > 65_536 ? Buffer.allocUnsafe(declared) : undefined;
-    const chunks: Buffer[] = [];
-    let size = 0;
-    let dead = false;
-    req.on('data', (c: Buffer) => {
-      if (dead) return;
-      if (size + c.length > max) {
-        dead = true;
-        reject(new ToolError('payload_too_large', `El cuerpo pasa de ${max} bytes.`, undefined, 413));
-      } else if (whole) {
-        c.copy(whole, size);
-        size += c.length;
-      } else {
-        chunks.push(c);
-        size += c.length;
-      }
-    });
-    req.on('end', () => !dead && resolve(whole ? whole.subarray(0, size) : Buffer.concat(chunks)));
-    req.on('error', (e) => !dead && reject(e));
-  });
-}
-
 /** Nombre de la sesión de la conexión MCP más reciente y abierta de ese chat (X-Session-Instance) del agente. */
 function sessionOfInstance(hub: Hub, agentId: string, instance: string): string {
   const c = one<{ session_id: string | null }>(
@@ -136,10 +86,12 @@ async function buildCtx(hub: Hub, req: IncomingMessage, url: URL, auth: Auth, re
   const description = header(req, 'x-session-description');
   const harness = header(req, 'x-session-harness');
   const cwd = header(req, 'x-session-cwd');
+  const tags = tagsHeader(req);
   const meta: SessionMeta = {
     ...(description !== undefined ? { description: description.slice(0, 300) } : {}),
     ...(harness !== undefined ? { harness: harness.slice(0, 40) } : {}),
     ...(cwd !== undefined ? { cwd: cwd.slice(0, 200) } : {}),
+    ...(tags ? { tags } : {}),
   };
   const now = Date.now();
   const session = ensureSession(hub, auth.agent, name, meta, now);
@@ -150,7 +102,38 @@ async function buildCtx(hub: Hub, req: IncomingMessage, url: URL, auth: Auth, re
   }
   const ac = new AbortController();
   res.on('close', () => ac.abort());
-  return { hub, agent: auth.agent, session, keyId: auth.keyId, warnings, now, signal: ac.signal };
+  return { hub, agent: auth.agent, session, keyId: auth.keyId, warnings, now, signal: ac.signal, origin: originOf(hub, req) };
+}
+
+/** X-Session-Tags: «repo, rama» que propone el cliente (máx. 10, normalizadas como las de set_session_info). */
+function tagsHeader(req: IncomingMessage): string[] | undefined {
+  const raw = header(req, 'x-session-tags');
+  if (!raw) return undefined;
+  const tags = [...new Set(raw.split(',').map((t) => norm(t).trim().slice(0, 24)).filter((t) => /^[a-z0-9][a-z0-9._:-]*$/.test(t)))].slice(0, 10);
+  return tags.length ? tags : undefined;
+}
+
+/**
+ * Salud para el monitoreo (solo en loopback: el proxy no expone /healthz). La base responde y, si hay copias
+ * automáticas, cuándo fue la última: `backupStale` si pasó más del doble del intervalo.
+ */
+function health(hub: Hub) {
+  let db = 'ok';
+  try {
+    one(hub.db, 'SELECT 1 AS x');
+  } catch (e) {
+    db = (e as Error).message;
+  }
+  const last = hub.cfg.backupDir ? lastBackup(hub) : null;
+  const ageH = last ? (Date.now() - last.at) / 3_600_000 : null;
+  return {
+    ok: db === 'ok',
+    scope: hub.cfg.scope,
+    db,
+    ...(hub.cfg.backupDir
+      ? { lastBackupAt: last ? new Date(last.at).toISOString() : null, backupStale: ageH === null || ageH > 2 * Math.max(1, hub.cfg.backupEveryHours) + 1 }
+      : {}),
+  };
 }
 
 /** IP del cliente. Detrás de un proxy de confianza se toma la entrada que añadió ÉL (la de la derecha), nunca la que el cliente pueda haber puesto. */
@@ -181,13 +164,36 @@ async function handle(hub: Hub, req: IncomingMessage, res: ServerResponse, rate:
   const path = url.pathname;
   const cfg = hub.cfg;
 
-  if (path === '/healthz') return sendJson(res, 200, { ok: true, scope: cfg.scope });
+  if (path === '/healthz') return sendJson(res, 200, health(hub));
+  // Panel web de las personas y página de invitación (su propia autenticación: cookie de sesión).
+  if (path === '/web' || path.startsWith('/web/') || path === '/join' || path.startsWith('/join/')) return handleWeb(hub, req, res, url, clientIp(hub, req), fails);
   if (path !== '/mcp' && !path.startsWith('/v1/')) return sendJson(res, 404, { error: 'not_found' });
 
   const origin = header(req, 'origin');
   if (origin && !cfg.allowedOrigins.includes(origin)) return sendAndClose(req, res, 403, { error: 'origin_not_allowed' });
 
   const ip = clientIp(hub, req);
+  // Canje de una invitación de un solo uso (sin llave: la invitación ES la credencial). Cuenta como intento fallido si no vale.
+  if (path === '/v1/join') {
+    if (req.method !== 'POST') return sendAndClose(req, res, 405, { error: 'method_not_allowed' }, { Allow: 'POST' });
+    const wait = fails.over(ip, cfg.authFailPerMinute);
+    if (wait) return sendAndClose(req, res, 429, { error: 'too_many_auth_failures' }, { 'Retry-After': String(wait) });
+    let token = '';
+    try {
+      const b = JSON.parse((await readBody(req, 4096)).toString('utf8')) as { token?: unknown };
+      token = typeof b.token === 'string' ? b.token.trim() : '';
+    } catch {
+      /* token vacío: no vale */
+    }
+    try {
+      const r = redeemInvite(hub, token, ip);
+      return sendJson(res, 200, { ok: true, result: { ...r, url: originOf(hub, req), scope: cfg.scope } });
+    } catch (e) {
+      if (!(e instanceof ToolError)) throw e;
+      fails.hit(ip, cfg.authFailPerMinute);
+      return sendJson(res, e.status, { ok: false, error: { code: e.code, message: e.message } });
+    }
+  }
   // Dos cabeceras Authorization son ambiguas (Node se queda con la primera, otro proxy podría quedarse con la última): se rechazan.
   const duplicatedAuth = req.rawHeaders.filter((h, i) => i % 2 === 0 && h.toLowerCase() === 'authorization').length > 1;
   const auth = duplicatedAuth ? null : authenticate(hub, req);
@@ -217,6 +223,15 @@ async function handle(hub: Hub, req: IncomingMessage, res: ServerResponse, rate:
     throw e;
   }
 
+  // Turno humano (hook UserPromptSubmit del cliente): la persona escribió en este chat. Se reanudan las conversaciones
+  // pausadas por el freno de bucles y se entregan los mensajes retenidos (hold, tope, remitente no permitido).
+  if (path === '/v1/human-turn' && req.method === 'POST') {
+    if (ctx.session.name === 'default' && !auth.pinned && !header(req, 'x-session-name')) {
+      return sendJson(res, 409, { ok: false, error: { code: 'session_unnamed', message: 'Indica la sesión con X-Session-Instance o X-Session-Name.' } });
+    }
+    const resumed = humanTurn(hub, ctx.session.id);
+    return sendJson(res, 200, { ok: true, result: { address: `${ctx.agent.id}/${ctx.session.name}`, resumedConversations: resumed, ...takeHeld(ctx, 20) } });
+  }
   // Espejo REST de las herramientas, para curl y scripts: GET /v1/tools · POST /v1/tools/<nombre>
   if (path === '/v1/tools' && req.method === 'GET') {
     return sendJson(res, 200, { tools: TOOLS.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })) });
@@ -316,15 +331,16 @@ function openStream(hub: Hub, ctx: Ctx, req: IncomingMessage, res: ServerRespons
 
 const NULL_SESSION = (agentId: string, now: number): SessionRow => ({
   id: '', agent_id: agentId, name: '', description: '', tags: '[]', harness: null, cwd: null, status_text: '', lifecycle: 'idle', created_at: now, last_seen_at: now, retired_at: null,
+  inbound: 'auto', wake_per_hour: null, allow_from: '[]',
 });
 
 /** Contexto de una petición que llega por una conexión MCP con estado (Mcp-Session-Id). */
-function connCtx(hub: Hub, auth: Auth, conn: ConnRow, res: ServerResponse): Ctx {
+function connCtx(hub: Hub, auth: Auth, conn: ConnRow, res: ServerResponse, req: IncomingMessage): Ctx {
   const now = Date.now();
   touchConnection(hub, conn, now);
   const ac = new AbortController();
   res.on('close', () => ac.abort());
-  const base = { hub, agent: auth.agent, conn, keyId: auth.keyId, now, signal: ac.signal, pinned: auth.pinned };
+  const base = { hub, agent: auth.agent, conn, keyId: auth.keyId, now, signal: ac.signal, pinned: auth.pinned, origin: originOf(hub, req) };
   const row = conn.session_id ? one<SessionRow>(hub.db, 'SELECT * FROM sessions WHERE id = ?', conn.session_id) : undefined;
   if (row) return { ...base, session: ensureSession(hub, auth.agent, row.name, {}, now), warnings: [] };
   return { ...base, session: NULL_SESSION(auth.agent.id, now), pending: true, warnings: ['Este chat aún no tiene nombre de sesión: pregunta al usuario y llama a register_session.'] };
@@ -350,7 +366,7 @@ async function handleMcp(hub: Hub, req: IncomingMessage, res: ServerResponse, ur
     return void res.end();
   }
   if (req.method === 'GET' && (header(req, 'accept') ?? '').includes('text/event-stream')) {
-    return openStream(hub, conn ? connCtx(hub, auth, conn, res) : await buildCtx(hub, req, url, auth, res), req, res);
+    return openStream(hub, conn ? connCtx(hub, auth, conn, res, req) : await buildCtx(hub, req, url, auth, res), req, res);
   }
   if (req.method !== 'POST') return sendAndClose(req, res, 405, { error: 'method_not_allowed' }, { Allow: 'GET, POST, DELETE' });
   let body: unknown;
@@ -377,13 +393,13 @@ async function handleMcp(hub: Hub, req: IncomingMessage, res: ServerResponse, ur
       {
         name: asked, pinned: auth.pinned, instance: header(req, 'x-session-instance'), suggest: header(req, 'x-session-suggest'),
         cwd: header(req, 'x-session-cwd'), harness: header(req, 'x-session-harness'), description: header(req, 'x-session-description'),
-        channels: ch === '1' ? 1 : ch === '0' ? 0 : null,
+        channels: ch === '1' ? 1 : ch === '0' ? 0 : null, auto: header(req, 'x-session-auto') === '1', tags: tagsHeader(req),
       },
       Date.now(),
     );
     created = true;
   }
-  const ctx = conn ? connCtx(hub, auth, conn, res) : await buildCtx(hub, req, url, auth, res);
+  const ctx = conn ? connCtx(hub, auth, conn, res, req) : await buildCtx(hub, req, url, auth, res);
   const { payload } = await handleRpc(ctx, body);
   const extra: Record<string, string> = created && conn ? { 'Mcp-Session-Id': conn.id } : {};
   if (payload === undefined) {

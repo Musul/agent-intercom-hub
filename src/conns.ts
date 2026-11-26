@@ -26,6 +26,10 @@ export interface ConnHeaders {
   harness?: string | undefined;
   description?: string | undefined;
   channels?: number | null | undefined;
+  /** El cliente pide nombrar solo el chat con su sugerencia (carpeta + rama) si está libre (X-Session-Auto: 1). */
+  auto?: boolean | undefined;
+  /** Etiquetas sugeridas por el cliente (X-Session-Tags: repo, rama). */
+  tags?: string[] | undefined;
 }
 
 const TOUCH_EVERY_MS = 5000;
@@ -76,7 +80,7 @@ export function createConnection(hub: Hub, agent: AgentRow, keyId: string, init:
     agent.id, hub.cfg.maxConnectionsPerAgent,
   );
   let conn = connById(hub, id)!;
-  const meta: SessionMeta = { description: h.description, harness: h.harness, cwd: h.cwd };
+  const meta: SessionMeta = { description: h.description, harness: h.harness, cwd: h.cwd, tags: h.tags };
   const fixed = h.pinned ?? h.name;
   if (fixed) return bindConnection(hub, conn, agent, fixed, meta, { takeover: true }).conn;
   if (h.instance) {
@@ -92,7 +96,36 @@ export function createConnection(hub: Hub, agent: AgentRow, keyId: string, init:
     }
     if (s) conn = bindConnection(hub, conn, agent, s.name, meta, { takeover: true }).conn;
   }
+  // Nombre automático: la sugerencia del cliente (carpeta + rama) si nadie la tiene abierta; si choca, se pregunta.
+  if (!conn.session_id && h.auto && hub.cfg.autoName) {
+    const suggest = suggestionOf(conn);
+    if (suggest) {
+      try {
+        conn = bindConnection(hub, conn, agent, suggest, meta).conn;
+        audit(hub, agent.id, conn.session_id, 'session_auto_named', suggest);
+      } catch (e) {
+        if (!(e instanceof ToolError)) throw e; // session_in_use: se le pedirá otro nombre con el formulario
+      }
+    }
+  }
   return conn;
+}
+
+/** La sugerencia si está libre; si otro chat la tiene abierta, la primera libre de «sugerencia-2» … «-9». */
+export function freeSuggestion(hub: Hub, conn: ConnRow): { name: string; busy: string | null } {
+  const base = suggestionOf(conn);
+  if (!base) return { name: '', busy: null };
+  const now = Date.now();
+  const taken = (name: string) => {
+    const s = one<SessionRow>(hub.db, 'SELECT * FROM sessions WHERE agent_id = ? AND name = ? AND retired_at IS NULL', conn.agent_id, name);
+    return !!s && sessionBusy(hub, s.id, conn, now);
+  };
+  if (!taken(base)) return { name: base, busy: null };
+  for (let i = 2; i <= 9; i++) {
+    const n = `${base.slice(0, 45)}-${i}`;
+    if (!taken(n)) return { name: n, busy: base };
+  }
+  return { name: '', busy: base };
 }
 
 /** La conexión `id` del agente, si existe y sigue abierta. */
@@ -160,7 +193,9 @@ export function bindConnection(
 export function askName(hub: Hub, connId: string, attempt = 1, note = ''): void {
   const conn = connById(hub, connId);
   if (!conn || conn.closed_at !== null || conn.session_id || conn.naming === 'declined' || !canElicit(conn) || asking.has(conn.id)) return;
-  const suggest = suggestionOf(conn);
+  const free = freeSuggestion(hub, conn);
+  const suggest = free.name;
+  if (free.busy && !note) note = `«${conn.agent_id}/${free.busy}» ya está abierta en otro chat: elige otro nombre.`;
   const p = hub.request(conn.id, 'elicitation/create', {
     message: `Agent Intercom: ¿cómo se llama esta sesión? Tus compañeros te escribirán a «${conn.agent_id}/<nombre>».${note ? ` ${note}` : ''}`,
     requestedSchema: {

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Agent Intercom · invitación</title>
+  <link rel="stylesheet" href="/web/app.css">
+  <script src="/join/join.js" defer></script>
+</head>
+<body>
+  <main>
+    <section class="card narrow">
+      <h1>Te invitaron a Agent Intercom</h1>
+      <p>Con esta invitación tu agente (Claude Code, Codex, OpenCode…) podrá hablar con los de tu equipo. Se usa <strong>una sola vez</strong> y caduca.</p>
+      <ol>
+        <li>Descarga la carpeta <code>skill/agent-intercom</code> del repositorio del equipo.</li>
+        <li>Desde esa carpeta, ejecuta (elige tu cliente):
+          <p><code id="cmd">node scripts/install.mjs --client claude --join "…"</code></p>
+          <button id="copy">Copiar</button> <span id="copied" class="muted"></span>
+        </li>
+        <li>Abre un chat nuevo. No hace falta reiniciar la terminal ni crear variables de entorno.</li>
+      </ol>
+      <p class="muted">El instalador canjea la invitación por tu llave personal y la guarda solo para tu usuario
+        (<code>~/.agentintercom/agent.key</code>). No la pegues en chats ni repositorios.</p>
+      <p id="err" class="error"></p>
+    </section>
+  </main>
+</body>
+</html>

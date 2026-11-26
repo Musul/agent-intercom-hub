@@ -1,4 +1,4 @@
-import { maintenance } from './admin.ts';
+import { maintenance, scheduledBackup } from './admin.ts';
 import { loadConfig } from './config.ts';
 import { openDb } from './db.ts';
 import { createHttpServer } from './http.ts';
@@ -27,9 +27,27 @@ const timer = setInterval(() => {
 }, 3_600_000);
 timer.unref();
 
+// Copias automáticas (BACKUP_DIR): la primera a los 60 s de arrancar y luego cada BACKUP_EVERY_HOURS.
+let backupTimer: NodeJS.Timeout | undefined;
+if (cfg.backupDir) {
+  const runBackup = () => {
+    try {
+      const r = scheduledBackup(hub);
+      console.log(`[copia] ${r.file} (${r.bytes} bytes${r.pruned ? `, ${r.pruned} antiguas borradas` : ''})`);
+    } catch (e) {
+      console.error('[copia] FALLÓ:', (e as Error).message);
+    }
+  };
+  setTimeout(runBackup, 60_000).unref();
+  backupTimer = setInterval(runBackup, Math.max(1, cfg.backupEveryHours) * 3_600_000);
+  backupTimer.unref();
+  console.log(`Copias automáticas en ${cfg.backupDir} cada ${cfg.backupEveryHours} h (se conservan ${cfg.backupKeep}).`);
+}
+
 function shutdown(signal: string): void {
   console.log(`${signal}: cerrando…`);
   clearInterval(timer);
+  if (backupTimer) clearInterval(backupTimer);
   hub.close();
   server.close(() => {
     hub.db.close();

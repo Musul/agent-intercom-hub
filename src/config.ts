@@ -51,6 +51,26 @@ export interface Config {
   trustProxyHops: number;
   /** Orígenes de navegador permitidos (vacío = ninguno; las peticiones sin `Origin` siempre pasan). */
   allowedOrigins: string[];
+  /** Mensajes por hora que pueden DESPERTAR una sesión (los demás quedan en cola sin despertarla). 0 = sin tope. */
+  wakePerHour: number;
+  /** Idas y vueltas seguidas entre dos sesiones sin turno humano antes de pausar la conversación. 0 = sin freno. */
+  loopMaxExchanges: number;
+  /** Tras este tiempo sin mensajes entre dos sesiones, su contador de bucle vuelve a cero. */
+  loopResetMs: number;
+  /** Nombrar solo el chat con la sugerencia del cliente (carpeta + rama) si el cliente lo pide (X-Session-Auto: 1). */
+  autoName: boolean;
+  /** Panel web: horas que dura una sesión iniciada. */
+  webSessionHours: number;
+  /** Panel web: `own` = cada persona ve las conversaciones de sus sesiones; `all` = todas las del espacio. */
+  webVisibility: 'own' | 'all';
+  /** URL pública (https://intercom.example.com) para los enlaces de invitación y del panel. Vacío = la del Host. */
+  publicUrl: string;
+  /** Horas que vale una invitación sin usar. */
+  inviteHours: number;
+  /** Copias automáticas: carpeta (vacío = desactivadas), cada cuántas horas y cuántas se conservan. */
+  backupDir: string;
+  backupEveryHours: number;
+  backupKeep: number;
 }
 
 const num = (v: string | undefined, d: number): number => {
@@ -94,6 +114,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, over: Partial<C
     trustProxy: env.TRUST_PROXY === '1' || env.TRUST_PROXY === 'true',
     trustProxyHops: Math.max(1, num(env.TRUST_PROXY_HOPS, 1)),
     allowedOrigins: (env.ALLOWED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean),
+    wakePerHour: Math.max(0, num(env.WAKE_PER_HOUR, 30)),
+    loopMaxExchanges: Math.max(0, num(env.LOOP_MAX_EXCHANGES, 10)),
+    loopResetMs: num(env.LOOP_RESET_MINUTES, 30) * 60_000,
+    autoName: env.AUTO_NAME !== '0' && env.AUTO_NAME !== 'false',
+    webSessionHours: num(env.WEB_SESSION_HOURS, 12),
+    webVisibility: env.WEB_VISIBILITY === 'all' ? 'all' : 'own',
+    publicUrl: (env.PUBLIC_URL || '').replace(/\/+$/, ''),
+    inviteHours: num(env.INVITE_HOURS, 48),
+    backupDir: env.BACKUP_DIR || '',
+    backupEveryHours: num(env.BACKUP_EVERY_HOURS, 24),
+    backupKeep: Math.max(1, num(env.BACKUP_KEEP, 14)),
     ...over,
   };
 }

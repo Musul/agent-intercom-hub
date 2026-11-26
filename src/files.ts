@@ -81,6 +81,7 @@ interface QuestionRow {
   asked_by: string;
   question: string;
   options: string | null;
+  person: string | null;
   state: string;
   answer: string | null;
   answered_by: string | null;
@@ -89,16 +90,21 @@ interface QuestionRow {
 }
 
 /** `ask_user`: la pregunta queda guardada; una persona la contesta con la CLI y la respuesta llega al buzón de la sesión. */
-export function askUser(ctx: Ctx, question: string, options?: string[]) {
+export function askUser(ctx: Ctx, question: string, options?: string[], person?: string) {
+  const to = (person ?? ctx.agent.id).trim().toLowerCase();
+  if (!one(ctx.hub.db, 'SELECT 1 FROM agents WHERE id = ? AND disabled_at IS NULL', to)) throw new ToolError('unknown_person', `No existe la persona «${to}» (usa su id de agente).`, undefined, 404);
   const id = newId('qst');
-  run(ctx.hub.db, 'INSERT INTO questions (id, session_id, asked_by, question, options, created_at) VALUES (?,?,?,?,?,?)', id, ctx.session.id, labelOf(ctx.session), question.slice(0, 2000), options ? JSON.stringify(options.slice(0, 10)) : null, ctx.now);
-  audit(ctx.hub, ctx.agent.id, ctx.session.id, 'question_asked', id);
-  return { requestId: id, state: 'open', note: 'La respuesta llegará a tu buzón (check_inbox) como mensaje de «human».' };
+  run(
+    ctx.hub.db, 'INSERT INTO questions (id, session_id, asked_by, question, options, created_at, person) VALUES (?,?,?,?,?,?,?)',
+    id, ctx.session.id, labelOf(ctx.session), question.slice(0, 2000), options ? JSON.stringify(options.slice(0, 10)) : null, ctx.now, to,
+  );
+  audit(ctx.hub, ctx.agent.id, ctx.session.id, 'question_asked', `${id} -> ${to}`);
+  return { requestId: id, state: 'open', person: to, note: `La pregunta aparece en el panel web de «${to}»; la respuesta llegará a tu buzón (check_inbox) como mensaje de «human».` };
 }
 
 export function listQuestions(hub: Ctx['hub'], state?: string) {
   return all<QuestionRow>(hub.db, `SELECT * FROM questions ${state ? 'WHERE state = ?' : ''} ORDER BY created_at DESC LIMIT 100`, ...(state ? [state] : [])).map((q) => ({
-    id: q.id, askedBy: q.asked_by, question: q.question, options: parseJson<string[] | null>(q.options, null), state: q.state, answer: q.answer, createdAt: iso(q.created_at),
+    id: q.id, askedBy: q.asked_by, person: q.person, question: q.question, options: parseJson<string[] | null>(q.options, null), state: q.state, answer: q.answer, createdAt: iso(q.created_at),
   }));
 }
 

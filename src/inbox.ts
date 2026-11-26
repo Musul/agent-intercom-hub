@@ -1,5 +1,6 @@
 import { resolvePeer } from './peers.ts';
-import { all, audit, labelOf, one, run, type Ctx, type SessionFull } from './store.ts';
+import { decide, heldNote, loopStep, systemNotice, type Decision, type HeldReason } from './policy.ts';
+import { all, audit, labelOf, one, run, type Ctx, type Hub, type SessionFull, type SessionRow } from './store.ts';
 import { clamp, iso, newId, parseJson, ToolError } from './util.ts';
 
 interface MsgRow {
@@ -20,6 +21,8 @@ interface MsgRow {
   acked_at: number | null;
   expires_at: number | null;
   idempotency_key: string | null;
+  wake: number;
+  held_reason: string | null;
 }
 
 export interface ContextItem {
@@ -106,33 +109,98 @@ export function sendMessage(ctx: Ctx, a: SendArgs) {
     if (!targets.length) throw new ToolError('cannot_message_self', 'No hay otra sesión a la que enviar (no puedes escribirte a ti mismo).');
   }
 
+  // Es la respuesta a algo que el destinatario preguntó: salta su modo hold y su lista de remitentes (no el tope ni el freno).
+  const solicited = !!a.responseTo;
+  const me = labelOf(session);
+  const refused: string[] = [];
   const sent = hub.tx(() =>
-    targets.map((t) => {
+    targets.flatMap((t) => {
       if (a.idempotencyKey) {
         const prev = one<MsgRow>(hub.db, 'SELECT * FROM messages WHERE from_session = ? AND to_session = ? AND idempotency_key = ?', session.id, t.id, a.idempotencyKey);
-        if (prev) return { target: t, row: prev, fresh: false };
+        if (prev) return [{ target: t, row: prev, fresh: false }];
       }
       if (pendingCount(ctx, t.id) >= hub.cfg.maxPendingPerSession) {
         throw new ToolError('inbox_full', `El buzón de ${labelOf(t)} tiene ${hub.cfg.maxPendingPerSession} mensajes sin atender; no admite más por ahora.`, { peer: labelOf(t) }, 429);
       }
+      let d: Decision;
+      try {
+        d = decide(hub, t, me, solicited, now);
+      } catch (e) {
+        // En un envío a «agente/*», una sesión en «off» se salta; a una sola, es un error claro.
+        if (fanOut && e instanceof ToolError && e.code === 'peer_not_accepting') {
+          refused.push(labelOf(t));
+          return [];
+        }
+        throw e;
+      }
+      const loop = loopStep(hub, session.id, t.id, now);
+      if (loop.paused) d = { wake: false, reason: 'freno_de_bucle' };
+      if (loop.justPaused) {
+        const note = `Conversación pausada entre ${me} y ${labelOf(t)}: ${loop.count} mensajes seguidos sin que intervenga una persona. Los mensajes siguen guardándose, pero no despiertan a nadie hasta que una persona escriba en uno de los dos chats o pulse «Reanudar» en el panel.`;
+        systemNotice(hub, session.id, note, now);
+        systemNotice(hub, t.id, note, now);
+        audit(hub, ctx.agent.id, session.id, 'loop_paused', `${me} <-> ${labelOf(t)} (${loop.count})`);
+      }
       const id = newId('msg');
       run(
         hub.db,
-        `INSERT INTO messages (id, kind, from_session, from_label, to_session, mode, body, context, response_to, state, created_at, expires_at, idempotency_key)
-         VALUES (?, 'direct', ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`,
-        id, session.id, labelOf(session), t.id, mode, a.message, JSON.stringify(context), a.responseTo ?? null, now, expiresAt, a.idempotencyKey ?? null,
+        `INSERT INTO messages (id, kind, from_session, from_label, to_session, mode, body, context, response_to, state, created_at, expires_at, idempotency_key, wake, held_reason)
+         VALUES (?, 'direct', ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)`,
+        id, session.id, me, t.id, mode, a.message, JSON.stringify(context), a.responseTo ?? null, now, expiresAt, a.idempotencyKey ?? null, d.wake ? 1 : 0, d.reason,
       );
-      return { target: t, row: one<MsgRow>(hub.db, 'SELECT * FROM messages WHERE id = ?', id)!, fresh: true };
+      return [{ target: t, row: one<MsgRow>(hub.db, 'SELECT * FROM messages WHERE id = ?', id)!, fresh: true }];
     }),
   );
   for (const s of sent) {
     if (!s.fresh) continue;
-    audit(hub, ctx.agent.id, session.id, 'message_sent', `${s.row.id} -> ${labelOf(s.target)}`);
-    hub.wake(s.target.id);
+    audit(hub, ctx.agent.id, session.id, 'message_sent', `${s.row.id} -> ${labelOf(s.target)}${s.row.wake ? '' : ` (retenido: ${s.row.held_reason})`}`);
+    hub.wake(s.target.id, s.row.wake === 1);
   }
-  const view = (s: (typeof sent)[number]) => ({ messageId: s.row.id, to: labelOf(s.target), state: s.row.state, acceptedAt: iso(s.row.created_at), duplicate: !s.fresh });
+  const view = (s: (typeof sent)[number]) => ({
+    messageId: s.row.id,
+    to: labelOf(s.target),
+    state: s.row.state,
+    acceptedAt: iso(s.row.created_at),
+    duplicate: !s.fresh,
+    // wakes: el mensaje despierta al destinatario (si recibe en automático). false: queda en su buzón, con el motivo.
+    wakes: s.row.wake === 1,
+    ...(s.row.wake ? {} : { heldReason: s.row.held_reason, note: heldNote(s.row.held_reason as HeldReason, labelOf(s.target)) }),
+  });
   if (!fanOut && sent.length === 1) return view(sent[0]!);
-  return { count: sent.length, messages: sent.map(view) };
+  return { count: sent.length, messages: sent.map(view), ...(refused.length ? { refused, refusedReason: 'peer_not_accepting' } : {}) };
+}
+
+type NotifyTarget = Pick<SessionRow, 'id' | 'inbound' | 'wake_per_hour' | 'allow_from'>;
+
+/**
+ * Avisos a varias sesiones (canales, tareas): respetan la política de entrada de cada una. Las que están en «off» o
+ * con el buzón lleno no lo reciben. Llamar dentro de una transacción; devuelve a quién despertar después.
+ */
+export function enqueueNotices(
+  hub: Hub,
+  from: { sessionId: string; label: string },
+  targets: NotifyTarget[],
+  n: { kind: 'channel' | 'task'; body: string; context: ContextItem[]; channelId?: string | null; threadId?: string | null },
+  now: number,
+): { wake: { id: string; push: boolean }[]; skipped: number } {
+  const wake: { id: string; push: boolean }[] = [];
+  let skipped = 0;
+  for (const t of targets) {
+    const full = one<{ n: number }>(hub.db, `SELECT COUNT(*) AS n FROM messages WHERE to_session = ? AND state IN ('queued','delivered')`, t.id)!.n >= hub.cfg.maxPendingPerSession;
+    if (t.inbound === 'off' || full) {
+      skipped++;
+      continue;
+    }
+    const d = decide(hub, t, from.label, false, now);
+    run(
+      hub.db,
+      `INSERT INTO messages (id, kind, from_session, from_label, to_session, mode, body, context, channel_id, thread_id, state, created_at, wake, held_reason)
+       VALUES (?, ?, ?, ?, ?, 'notify', ?, ?, ?, ?, 'queued', ?, ?, ?)`,
+      newId('msg'), n.kind, from.sessionId, from.label, t.id, n.body, JSON.stringify(n.context), n.channelId ?? null, n.threadId ?? null, now, d.wake ? 1 : 0, d.reason,
+    );
+    wake.push({ id: t.id, push: d.wake });
+  }
+  return { wake, skipped };
 }
 
 const msgView = (m: MsgRow, ctx: Ctx, redelivered: boolean) => ({
@@ -149,6 +217,9 @@ const msgView = (m: MsgRow, ctx: Ctx, redelivered: boolean) => ({
   channelId: m.channel_id,
   threadId: m.thread_id,
   state: m.state,
+  // wake false: llegó retenido (política hold, remitente no permitido, tope por hora o freno de bucle) y no despertó a nadie.
+  wake: m.wake === 1,
+  heldReason: m.held_reason,
   redelivered,
   createdAt: iso(m.created_at),
   deliveredAt: iso(m.delivered_at),
@@ -191,6 +262,22 @@ export async function checkInbox(ctx: Ctx, args: { limit?: number; waitMs?: numb
     return msgView(m, ctx, redelivered);
   });
   return { acknowledgement: 'Llama a acknowledge_messages con los id ya procesados; si no, volverán a salir.', count: out.length, messages: out };
+}
+
+/**
+ * Los mensajes retenidos (no despertaron a nadie) que esta sesión aún no recibió: se marcan entregados y se devuelven
+ * para que el hook del turno humano los meta en el chat. Hay que confirmarlos con acknowledge_messages igual.
+ */
+export function takeHeld(ctx: Ctx, limit: number) {
+  const { hub, session } = ctx;
+  const rows = all<MsgRow>(
+    hub.db,
+    `SELECT * FROM messages WHERE to_session = ? AND state = 'queued' AND wake = 0 AND (expires_at IS NULL OR expires_at > ?) ORDER BY created_at, rowid LIMIT ?`,
+    session.id, Date.now(), clamp(limit, 1, 100),
+  );
+  const t = Date.now();
+  for (const m of rows) run(hub.db, `UPDATE messages SET state = 'delivered', delivered_at = ? WHERE id = ?`, t, m.id);
+  return { count: rows.length, messages: rows.map((m) => msgView({ ...m, state: 'delivered', delivered_at: t }, ctx, false)) };
 }
 
 export function acknowledge(ctx: Ctx, ids: string[]) {

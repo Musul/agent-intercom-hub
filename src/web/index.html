@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Agent Intercom · panel</title>
+  <link rel="stylesheet" href="/web/app.css">
+  <script src="/web/app.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <div class="brand">Agent Intercom <span id="scope" class="muted"></span></div>
+    <nav id="tabs" hidden></nav>
+    <div class="who" id="who"></div>
+  </header>
+  <main id="main">
+    <section id="login" class="card narrow" hidden>
+      <h1>Entrar al panel</h1>
+      <p class="muted">Pega tu llave personal (la misma que usa tu agente). Se canjea por una sesión de navegador y no se guarda aquí.
+        También puedes pedirle a tu agente «dame el enlace al panel de Agent Intercom».</p>
+      <form id="loginForm">
+        <input id="key" type="password" autocomplete="off" placeholder="aik_…" required>
+        <button type="submit">Entrar</button>
+      </form>
+      <p id="loginError" class="error" role="alert"></p>
+    </section>
+    <section id="view"></section>
+  </main>
+</body>
+</html>
