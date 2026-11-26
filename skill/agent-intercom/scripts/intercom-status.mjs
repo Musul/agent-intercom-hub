@@ -36,7 +36,7 @@ try {
 let prefix = '';
 if (values.then) {
   try {
-    prefix = execSync(values.then, { input: raw, encoding: 'utf8', timeout: 3000, windowsHide: true }).trimEnd();
+    prefix = execSync(values.then, { input: raw, encoding: 'utf8', timeout: 10_000, windowsHide: true }).trimEnd(); // algunas líneas tardan varios segundos
   } catch {
     /* la otra línea falló: se muestra solo la nuestra */
   }
