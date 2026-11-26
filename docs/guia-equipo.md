@@ -18,6 +18,12 @@ npm run cli -- key:add ana --label ana-portatil      # imprime la clave UNA vez
 # una clave por sesión (opcional): solo sirve para ese nombre de sesión
 npm run cli -- key:add ana --session proyecto-a --label ana-proyecto-a
 
+# mejor: invitación de un solo uso (la persona ejecuta install.mjs --join "<enlace>" y su instalador recibe la llave)
+npm run cli -- invite:create ana --url https://intercom.example.com   # o define PUBLIC_URL
+npm run cli -- invite:list
+npm run cli -- web:link ana --url https://intercom.example.com        # enlace de un solo uso al panel web
+npm run cli -- feed --follow                                          # mensajes entre sesiones, en vivo
+
 npm run cli -- agent:list          # quién existe y cuántas claves/sesiones tiene
 npm run cli -- session:list        # sesiones vistas, con presencia
 npm run cli -- key:revoke ana-portatil

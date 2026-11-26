@@ -1,5 +1,9 @@
 # 01 · Arquitectura
 
+> **Aviso (2026-11-26):** este documento describe el despliegue anterior (gateway upstream). Para el hub actual
+> (sesiones por chat, panel web, invitaciones, política de entrada, copias y monitoreo) ver
+> [09 · Operación del hub](09-operacion-hub.md), [arquitectura](arquitectura.md) y [contrato](contrato.md).
+
 ## Visión general
 
 ```

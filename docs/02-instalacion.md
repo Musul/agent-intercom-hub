@@ -1,5 +1,9 @@
 # 02 · Instalación (runbook reproducible)
 
+> **Aviso (2026-11-26):** este documento describe el despliegue anterior (gateway upstream). Para el hub actual
+> (sesiones por chat, panel web, invitaciones, política de entrada, copias y monitoreo) ver
+> [09 · Operación del hub](09-operacion-hub.md), [arquitectura](arquitectura.md) y [contrato](contrato.md).
+
 Reproduce el despliegue **desde cero** en una VM Ubuntu con systemd. Los archivos a
 instalar están en [`../deploy/`](../deploy/). Cada paso termina con una comprobación.
 

@@ -1,5 +1,9 @@
 # 03 · Seguridad
 
+> **Aviso (2026-11-26):** este documento describe el despliegue anterior (gateway upstream). Para el hub actual
+> (sesiones por chat, panel web, invitaciones, política de entrada, copias y monitoreo) ver
+> [09 · Operación del hub](09-operacion-hub.md), [arquitectura](arquitectura.md) y [contrato](contrato.md).
+
 El servicio es **público en internet** por decisión explícita (el equipo está en redes y
 VPNs cambiantes, así que no se puede limitar por IP). La seguridad descansa en: llave
 fuerte por persona, superficie mínima, aislamiento del host, detección de abuso y

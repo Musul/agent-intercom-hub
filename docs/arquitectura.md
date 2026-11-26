@@ -167,3 +167,32 @@ de 90. Los mensajes **pendientes no se borran nunca**. Copia de seguridad: `sqli
 | `check_inbox` entrega al menos una vez | Un agente que se cae no pierde mensajes | Hay que confirmar con `acknowledge_messages` |
 | Un nombre abierto en otro chat se rechaza al nombrar (`session_in_use`) | Cada chat ve solo sus mensajes | Con `takeover` (o con `X-Session-Name` fijo) dos chats pueden compartir buzón, como antes |
 | online = recibe en automático | Es lo que el equipo necesita saber: «¿lo leerá ya?» | Codex, OpenCode y Antigravity figuran offline (`sin_entrega_automatica`) aunque tengan el chat abierto |
+
+## 10. Equipo con un seat por persona (2026-11-26)
+
+La mensajería nativa entre sesiones de Claude Code solo une sesiones **de la misma cuenta**. Con un seat de Teams por
+persona, el hub es el camino entre PCs y personas. Eso cambia dos cosas: cada mensaje que despierta a un chat gasta la
+cuota de **su dueño**, y nadie ve ya las sesiones de los demás en la app. Lo añadido responde a eso:
+
+| Pieza | Dónde | Qué hace |
+|---|---|---|
+| Política de entrada | `policy.ts`, `set_inbound_policy`, panel | Por sesión: `auto`/`hold`/`off`, `allowFrom`, `wakePerHour`. Decide en el envío si el mensaje **despierta** (`messages.wake`); si no, queda retenido con `held_reason`. Las respuestas a lo que la sesión preguntó saltan `hold` y `allowFrom` |
+| Freno de bucles | `policy.ts` (`pair_guard`) | Cuenta los mensajes directos entre cada par de sesiones; pasado `2 × LOOP_MAX_EXCHANGES` sin turno humano, los siguientes quedan retenidos y ambas reciben un aviso `system`. Se reinicia con silencio, turno humano o «Reanudar» |
+| Turno humano | `POST /v1/human-turn`, hooks | Los hooks de Claude Code/Codex/Antigravity lo llaman cuando el usuario escribe o abre el chat: reanuda pausas y entrega lo retenido. No es herramienta MCP |
+| Entrega | `store.ts` (`deliver`), vigilante, plugins | Canal, vigilante, OpenCode y pi solo empujan/avisan lo que tiene `wake = 1`; `presenceOf` solo cuenta esos para `sin_confirmar` |
+| Nombre automático | `conns.ts` (`X-Session-Auto`), `intercom-headers.mjs` | Repo + rama como nombre si está libre; si choca, formulario con `nombre-2`. Etiquetas (`X-Session-Tags`) y descripción automáticas |
+| Reparto de tareas | `tasks.ts` | Tareas con etiquetas; al quedar listas avisan (`kind:"task"`) a las sesiones con esas etiquetas; al completarse o devolverse, a la creadora |
+| Panel web | `web.ts`, `src/web/` | Sesiones, conversaciones, buzones propios, tareas, canales; contestar `ask_user` (ahora con `person`), política, reanudar. Cookie propia, CSP estricta, contenido siempre como texto |
+| Invitaciones | `invites.ts`, `/v1/join`, `install.mjs --join` | Enlace de un solo uso que el instalador canjea por una llave nueva guardada solo para el usuario; el `headersHelper` la lee en cada conexión |
+| Copias y salud | `admin.ts`, `server.ts`, `/healthz`, `deploy/bin/*` | Copias automáticas en `BACKUP_DIR`, verificación, ensayo y restauración por CLI; copia cifrada fuera de la VM y monitoreo con aviso en transiciones |
+
+**Decisiones:**
+
+| Decisión | Por qué | Coste |
+|---|---|---|
+| Retener en vez de rechazar (salvo `off`) | Un mensaje perdido rompe la colaboración; uno retenido solo espera a una persona | El buzón crece si nadie lo atiende (sigue el tope `MAX_PENDING_PER_SESSION`) |
+| `allowFrom` limita quién **despierta**, no quién escribe | Proteger la cuota sin cortar la colaboración | Un remitente no permitido puede seguir dejando mensajes (retenidos) |
+| El freno no se levanta por MCP | Un agente (o un mensaje que lo convenza) no debe poder quitárselo | Se necesita una persona: escribir en el chat o el panel |
+| VS Code recibe por hooks por defecto | Relanzar el vigilante en cada turno gastaba una llamada de herramienta por turno | Sin canal, un chat quieto en el IDE recibe al siguiente turno (`--ide-live` lo cambia) |
+| Panel con visibilidad `own` por defecto | Las conversaciones directas entre otras personas no son de todos | Para supervisar todo el equipo hay que activar `WEB_VISIBILITY=all` |
+| Token de invitación y de panel en el fragmento (`#`) | No aparece en logs del proxy ni en `Referer` | El enlace solo funciona con un navegador o el instalador |

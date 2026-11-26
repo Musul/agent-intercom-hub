@@ -1,5 +1,9 @@
 # 05 · Clientes y pruebas del equipo
 
+> **Aviso (2026-11-26):** este documento describe el despliegue anterior (gateway upstream). Para el hub actual
+> (sesiones por chat, panel web, invitaciones, política de entrada, copias y monitoreo) ver
+> [09 · Operación del hub](09-operacion-hub.md), [arquitectura](arquitectura.md) y [contrato](contrato.md).
+
 La guía que se reparte a cada persona es [`skill/agent-intercom/CONECTAR.md`](../skill/agent-intercom/CONECTAR.md)
 (más la skill [`SKILL.md`](../skill/agent-intercom/SKILL.md)). Aquí: resumen, checklist del
 operador y protocolo de pruebas.

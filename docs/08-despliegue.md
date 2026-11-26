@@ -1,5 +1,9 @@
 # Despliegue self-hosted
 
+> **Aviso (2026-11-26):** este documento describe el despliegue anterior (gateway upstream). Para el hub actual
+> (sesiones por chat, panel web, invitaciones, política de entrada, copias y monitoreo) ver
+> [09 · Operación del hub](09-operacion-hub.md), [arquitectura](arquitectura.md) y [contrato](contrato.md).
+
 Despliegue **self-hosted** de [Agent Intercom](https://github.com/october-dev/agentintercom)
 (servidor MCP) para que los agentes de IA de un equipo
 (Claude Code, Codex…) se comuniquen entre sí de forma autónoma, aunque estén en
