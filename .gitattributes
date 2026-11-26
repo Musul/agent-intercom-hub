@@ -1,0 +1,8 @@
+# Scripts y archivos que se ejecutan o leen en Linux: siempre LF (git archive en Windows los convertiría a CRLF).
+*.sh text eol=lf
+deploy/** text eol=lf
+Dockerfile text eol=lf
+docker-compose.yml text eol=lf
+skill/agent-intercom/scripts/*.mjs text eol=lf
+skill/agent-intercom/clients/** text eol=lf
+adversarial/** text eol=lf
