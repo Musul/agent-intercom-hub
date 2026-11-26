@@ -1,0 +1,34 @@
+# /etc/default/intercom-ops — configuración de intercom-backup-offsite e intercom-monitor (chmod 600, root).
+# Copia este archivo, ajusta los valores y activa los timers:
+#   sudo install -m 600 deploy/intercom-ops.example /etc/default/intercom-ops
+#   sudo install -m 755 deploy/bin/intercom-backup-offsite deploy/bin/intercom-monitor /usr/local/sbin/
+#   sudo cp deploy/systemd/intercom-backup.* deploy/systemd/intercom-monitor.* /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now intercom-backup.timer intercom-monitor.timer
+#   sudo /usr/local/sbin/intercom-monitor --test        # comprueba que llegan los avisos
+
+# ── Copias ────────────────────────────────────────────────────────────────────────────────────────────────────────
+# BACKUP_DIR del servidor vista desde el host. Con docker compose (volumen intercom-data y BACKUP_DIR=/data/backups):
+BACKUP_SOURCE_DIR=/var/lib/docker/volumes/agent-intercom-govtech_intercom-data/_data/backups
+# Copias cifradas que se quedan en la VM y clave de cifrado (guárdala TAMBIÉN fuera de la VM: sin ella no hay restauración)
+BACKUP_LOCAL_DIR=/var/backups/intercom
+BACKUP_PASSPHRASE_FILE=/etc/intercom/backup.pass
+BACKUP_KEEP_LOCAL=7
+# Bucket fuera de la VM (vacío = solo copia local cifrada). Ponle regla de ciclo de vida (p. ej. borrar a los 90 días).
+BACKUP_GCS_URI=gs://<bucket>/intercom
+# CLI del servidor para verificar la copia antes de subirla (opcional)
+# Ruta de esa carpeta vista por la CLI (dentro del contenedor)
+CLI_BACKUP_DIR=/data/backups
+INTERCOM_CLI="docker compose -f /opt/agent-intercom/docker-compose.yml exec -T intercom node --disable-warning=ExperimentalWarning src/cli.ts"
+
+# ── Monitoreo ─────────────────────────────────────────────────────────────────────────────────────────────────────
+DOMAIN=intercom.example.com
+LOCAL_PORT=8787
+# Unidades de systemd que deben estar activas (las del despliegue real)
+UNITS="intercom-caddy fail2ban docker"
+CERT_MIN_DAYS=14
+DISK_PATH=/var/lib
+DISK_MAX_PCT=90
+OFFSITE_MAX_HOURS=48
+# Avisos (solo en transiciones). Webhook que acepte {"text": …} y/o ntfy.
+ALERT_WEBHOOK_URL=
+NTFY_URL=

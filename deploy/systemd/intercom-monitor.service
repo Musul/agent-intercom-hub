@@ -1,0 +1,12 @@
+[Unit]
+Description=Agent Intercom: monitoreo con aviso en transiciones
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/intercom-monitor
+StateDirectory=intercom-monitor
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true

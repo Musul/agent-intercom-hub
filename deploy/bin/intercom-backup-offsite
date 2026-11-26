@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# intercom-backup-offsite — copia CIFRADA de la base de Agent Intercom FUERA de la VM.
+#
+# El servidor ya hace copias consistentes en caliente en BACKUP_DIR (intercom-AAAAMMDD-HHMMSS.db). Este script toma la
+# más nueva que aún no subió, la comprueba, la comprime, la cifra con gpg (AES-256, clave en un archivo solo de root) y
+# la sube a un bucket (gcloud storage). Sin bucket, deja la copia cifrada en BACKUP_LOCAL_DIR.
+#
+# Configuración: /etc/default/intercom-ops (ver deploy/intercom-ops.example). Lo lanza intercom-backup.timer.
+# Restaurar: gcloud storage cp gs://…/intercom-….db.gz.gpg . && gpg -d … | gunzip > copia.db
+#            intercom backup:test copia.db   (ensayo)   ·   intercom restore copia.db --force   (servidor parado)
+set -euo pipefail
+
+CONF=${INTERCOM_OPS_CONF:-/etc/default/intercom-ops}
+# shellcheck disable=SC1090
+[ -r "$CONF" ] && . "$CONF"
+
+: "${BACKUP_SOURCE_DIR:?Define BACKUP_SOURCE_DIR (la BACKUP_DIR del servidor vista desde el host)}"
+: "${BACKUP_LOCAL_DIR:=/var/backups/intercom}"
+: "${BACKUP_PASSPHRASE_FILE:=/etc/intercom/backup.pass}"
+: "${BACKUP_GCS_URI:=}"
+: "${BACKUP_KEEP_LOCAL:=7}"
+: "${INTERCOM_CLI:=}"
+# La misma carpeta vista por la CLI (dentro del contenedor suele ser /data/backups)
+: "${CLI_BACKUP_DIR:=$BACKUP_SOURCE_DIR}"
+
+log() { logger -t intercom-backup -- "$*" 2>/dev/null || true; echo "$*"; }
+fail() { log "ERROR: $*"; exit 1; }
+
+[ -r "$BACKUP_PASSPHRASE_FILE" ] || fail "no puedo leer la clave de cifrado $BACKUP_PASSPHRASE_FILE (créala: head -c 48 /dev/urandom | base64 > …; chmod 600; guárdala TAMBIÉN fuera de la VM)"
+command -v gpg >/dev/null || fail "falta gpg"
+
+latest=$(find "$BACKUP_SOURCE_DIR" -maxdepth 1 -name 'intercom-[0-9]*-[0-9]*.db' -printf '%f\n' 2>/dev/null | sort | tail -1)
+[ -n "$latest" ] || fail "no hay copias en $BACKUP_SOURCE_DIR (¿BACKUP_DIR definido en el servidor?)"
+mkdir -p "$BACKUP_LOCAL_DIR"
+chmod 700 "$BACKUP_LOCAL_DIR"
+out="$BACKUP_LOCAL_DIR/$latest.gz.gpg"
+if [ -e "$out" ]; then
+  log "sin novedades: $latest ya está cifrada"
+else
+  # Comprobación de integridad antes de subir (con la CLI del servidor si está configurada).
+  if [ -n "$INTERCOM_CLI" ]; then
+    $INTERCOM_CLI backup:verify "$CLI_BACKUP_DIR/$latest" --json >/dev/null || fail "la copia $latest no pasó la verificación"
+  fi
+  tmp="$out.tmp"
+  gzip -c "$BACKUP_SOURCE_DIR/$latest" | gpg --batch --yes --quiet --symmetric --cipher-algo AES256 \
+    --passphrase-file "$BACKUP_PASSPHRASE_FILE" -o "$tmp"
+  mv "$tmp" "$out"
+  chmod 600 "$out"
+  log "cifrada: $out ($(stat -c %s "$out") bytes)"
+fi
+
+if [ -n "$BACKUP_GCS_URI" ]; then
+  command -v gcloud >/dev/null || fail "falta gcloud para subir a $BACKUP_GCS_URI"
+  gcloud storage cp --no-clobber "$out" "$BACKUP_GCS_URI/" >/dev/null || fail "no se pudo subir a $BACKUP_GCS_URI"
+  log "subida: $BACKUP_GCS_URI/$(basename "$out")"
+fi
+
+# Conserva solo las BACKUP_KEEP_LOCAL cifradas más nuevas en la VM (en el bucket manda su regla de ciclo de vida).
+find "$BACKUP_LOCAL_DIR" -maxdepth 1 -name 'intercom-*.db.gz.gpg' -printf '%f\n' | sort -r | tail -n +"$((BACKUP_KEEP_LOCAL + 1))" |
+  while read -r f; do rm -f -- "$BACKUP_LOCAL_DIR/$f"; done
+date -u +%FT%TZ > "$BACKUP_LOCAL_DIR/.last-offsite"

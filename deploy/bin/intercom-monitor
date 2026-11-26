@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# intercom-monitor — vigila Agent Intercom y avisa SOLO cuando algo cambia de estado (cae o se recupera).
+#
+# Comprobaciones:
+#   salud      GET http://127.0.0.1:<puerto>/healthz → ok y la base responde
+#   copias     la última copia automática no está vieja (backupStale=false) y la copia fuera de la VM tiene < 2 días
+#   mcp        https://<dominio>/mcp sin llave → 401 (el servicio responde y exige llave)
+#   panel      https://<dominio>/web/ → 200
+#   tls        el certificado caduca en más de CERT_MIN_DAYS días
+#   disco      el disco de los datos está por debajo de DISK_MAX_PCT %
+#   unidades   cada unidad de systemd de UNITS está activa (p. ej. caddy, fail2ban, o el servicio del hub)
+#
+# Avisos: ALERT_WEBHOOK_URL (POST JSON {"text": …}, sirve para Slack/Google Chat/Discord con /slack), NTFY_URL (POST
+# texto plano) y siempre syslog (logger -t intercom-monitor). Configuración en /etc/default/intercom-ops.
+# Lo lanza intercom-monitor.timer cada 5 minutos. `intercom-monitor --test` manda un aviso de prueba.
+set -uo pipefail
+
+CONF=${INTERCOM_OPS_CONF:-/etc/default/intercom-ops}
+# shellcheck disable=SC1090
+[ -r "$CONF" ] && . "$CONF"
+
+: "${DOMAIN:?Define DOMAIN (p. ej. intercom.example.com)}"
+: "${LOCAL_PORT:=8787}"
+: "${UNITS:=}"
+: "${CERT_MIN_DAYS:=14}"
+: "${DISK_PATH:=/var/lib}"
+: "${DISK_MAX_PCT:=90}"
+: "${BACKUP_LOCAL_DIR:=/var/backups/intercom}"
+: "${OFFSITE_MAX_HOURS:=48}"
+: "${STATE_FILE:=/var/lib/intercom-monitor/state}"
+: "${ALERT_WEBHOOK_URL:=}"
+: "${NTFY_URL:=}"
+
+alert() {
+  local msg="[intercom $DOMAIN] $*"
+  logger -t intercom-monitor -- "$msg" 2>/dev/null || true
+  echo "$msg"
+  if [ -n "$ALERT_WEBHOOK_URL" ]; then
+    local json
+    json=$(printf '%s' "$msg" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    curl -fsS -m 10 -H 'Content-Type: application/json' -d "{\"text\":\"$json\"}" "$ALERT_WEBHOOK_URL" >/dev/null || logger -t intercom-monitor "no se pudo enviar el aviso al webhook"
+  fi
+  if [ -n "$NTFY_URL" ]; then
+    curl -fsS -m 10 -d "$msg" "$NTFY_URL" >/dev/null || logger -t intercom-monitor "no se pudo enviar el aviso a ntfy"
+  fi
+}
+
+if [ "${1:-}" = "--test" ]; then
+  alert "aviso de prueba del monitoreo"
+  exit 0
+fi
+
+declare -A now
+detail=()
+check() { # nombre resultado(0=bien) detalle
+  if [ "$2" -eq 0 ]; then now[$1]=OK; else now[$1]=FAIL; detail+=("$1: $3"); fi
+}
+
+health=$(curl -fsS -m 5 "http://127.0.0.1:$LOCAL_PORT/healthz" 2>/dev/null)
+echo "$health" | grep -q '"ok":true'; check salud $? "healthz no responde bien: ${health:-sin respuesta}"
+if echo "$health" | grep -q '"backupStale"'; then
+  echo "$health" | grep -q '"backupStale":false'; check copias $? "la última copia automática es vieja o no existe"
+fi
+if [ -f "$BACKUP_LOCAL_DIR/.last-offsite" ]; then
+  age=$(( ($(date +%s) - $(date -d "$(cat "$BACKUP_LOCAL_DIR/.last-offsite")" +%s)) / 3600 ))
+  [ "$age" -lt "$OFFSITE_MAX_HOURS" ]; check copia_externa $? "la copia fuera de la VM tiene ${age} h"
+fi
+
+code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "https://$DOMAIN/mcp" -X POST -H 'Content-Type: application/json' -d '{}')
+[ "$code" = 401 ]; check mcp $? "https://$DOMAIN/mcp sin llave respondió $code (se esperaba 401)"
+code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "https://$DOMAIN/web/")
+[ "$code" = 200 ]; check panel $? "https://$DOMAIN/web/ respondió $code"
+
+end=$(echo | openssl s_client -servername "$DOMAIN" -connect "$DOMAIN:443" 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
+if [ -n "$end" ]; then
+  days=$(( ($(date -d "$end" +%s) - $(date +%s)) / 86400 ))
+  [ "$days" -ge "$CERT_MIN_DAYS" ]; check tls $? "el certificado caduca en $days días"
+else
+  check tls 1 "no pude leer el certificado de $DOMAIN"
+fi
+
+pct=$(df --output=pcent "$DISK_PATH" 2>/dev/null | tail -1 | tr -dc '0-9')
+[ -n "$pct" ] && [ "$pct" -lt "$DISK_MAX_PCT" ]; check disco $? "disco de $DISK_PATH al ${pct:-?}%"
+
+for u in $UNITS; do
+  systemctl is-active --quiet "$u"; check "unidad_$u" $? "la unidad $u no está activa"
+done
+
+# Solo transiciones: compara con el estado anterior.
+mkdir -p "$(dirname "$STATE_FILE")"
+declare -A before
+if [ -f "$STATE_FILE" ]; then
+  while IFS='=' read -r k v; do [ -n "$k" ] && before[$k]=$v; done < "$STATE_FILE"
+fi
+changes=()
+for k in "${!now[@]}"; do
+  prev=${before[$k]:-OK}
+  if [ "${now[$k]}" != "$prev" ]; then
+    if [ "${now[$k]}" = FAIL ]; then
+      for d in "${detail[@]}"; do [[ $d == "$k:"* ]] && changes+=("CAÍDO  $d"); done
+    else
+      changes+=("RECUPERADO  $k")
+    fi
+  fi
+done
+: > "$STATE_FILE.tmp"
+for k in "${!now[@]}"; do echo "$k=${now[$k]}" >> "$STATE_FILE.tmp"; done
+mv "$STATE_FILE.tmp" "$STATE_FILE"
+if [ ${#changes[@]} -gt 0 ]; then alert "$(printf '%s; ' "${changes[@]}")"; fi
+[ ${#detail[@]} -eq 0 ]

@@ -1,0 +1,11 @@
+[Unit]
+Description=Agent Intercom: copia cifrada diaria fuera de la VM
+
+[Timer]
+# El servidor hace su copia (BACKUP_DIR) cada 24 h desde que arranca; esto la recoge, cifra y sube.
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

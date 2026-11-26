@@ -69,6 +69,20 @@ intercom.example.com {
 		}
 	}
 
+	# Panel web de las personas (/web/) y página de invitación (/join). Cuerpos pequeños: solo JSON de formularios.
+	@personas path /web /web/* /join /join/*
+	handle @personas {
+		request_body {
+			max_size 64KiB
+		}
+		reverse_proxy 127.0.0.1:8787 {
+			transport http {
+				dial_timeout 3s
+				response_header_timeout 15s
+			}
+		}
+	}
+
 	handle {
 		respond "not found" 404
 	}

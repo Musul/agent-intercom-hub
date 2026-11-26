@@ -7,6 +7,7 @@ services:
         required: false
     environment:
       TRUST_PROXY: "1" # detrás de Caddy/nginx
+      BACKUP_DIR: /data/backups # copias automáticas dentro del volumen (intercom-backup-offsite las cifra y saca de la VM)
     ports:
       - "127.0.0.1:8787:8787" # solo local: el proxy TLS publica el servicio
     volumes:
