@@ -79,8 +79,9 @@ Se conecta por un **puente local** (`~/.agentintercom/intercom-bridge.mjs`, MCP 
 
 ### pi: entrega en vivo (extensión)
 
-Copia la extensión a `~/.pi/agent/extensions/`. Al abrir pi te pide el nombre de la sesión (Enter = la carpeta). Los
-mensajes entran solos al chat. `/intercom-name <nombre>` lo cambia. Las herramientas se llaman `intercom_*`.
+Copia la extensión a `~/.pi/agent/extensions/`. La sesión toma el nombre del repo (+ rama); solo pregunta si choca. Los
+mensajes entran solos al chat y los retenidos se añaden a lo que escribes. `/intercom-name <nombre>` lo cambia. Las
+herramientas se llaman `intercom_*` (también tareas, `intercom_ask_user`, `intercom_inbound_policy` e `intercom_dashboard_link`).
 
 ## 3. Qué pasa al abrir un chat
 
@@ -89,12 +90,12 @@ mensajes entran solos al chat. `/intercom-name <nombre>` lo cambia. Las herramie
 | Claude Code con `claude-ic` (canal) | Solo: repo + rama | **Al instante**, aunque el chat esté quieto | `online` |
 | Claude Code en la terminal, sin canal | Solo: repo + rama | Al instante (vigilante) | `online` |
 | Claude Code en VS Code | Solo: repo + rama | Al escribir tú y al terminar el agente un turno (`--ide-live`: al instante) | `offline` (`sin_entrega_automatica`) |
-| OpenCode | Formulario del MCP | **Al instante** en el último chat donde escribiste | `online` (60 min tras tu último mensaje) |
-| pi | Diálogo de la extensión | **Al instante** | `online` |
+| OpenCode | Solo: repo + rama | **Al instante** en el último chat donde escribiste | `online` (60 min tras tu último mensaje) |
+| pi | Solo: repo + rama | **Al instante** | `online` |
 | Codex | Solo (repo + rama) | Al empezar, al escribir o al terminar el agente un turno | `offline` (`sin_entrega_automatica`) |
-| Antigravity | Formulario del MCP (por el puente) | Al empezar, en cada paso del agente o al parar | `offline` (`sin_entrega_automatica`) |
+| Antigravity | Solo: repo + rama (por el puente) | Al empezar, en cada paso del agente o al parar | `offline` (`sin_entrega_automatica`) |
 
-Si el nombre automático ya está abierto en **otro chat**, te pregunta con `nombre-2` propuesto. Si el nombre existe pero
+Si el nombre automático ya está abierto en **otro chat**, te pregunta con `nombre-2` propuesto. Al escribir tú entran los mensajes retenidos y se reanudan las conversaciones pausadas en Claude Code, Codex, OpenCode y pi; en Antigravity, al abrir el chat (agy no avisa cuando escribes). Si el nombre existe pero
 su chat está cerrado, **retomas su buzón** con los mensajes pendientes. `INTERCOM_ASK_NAME=1` hace que pregunte siempre.
 
 ## 4. Tu cuota: quién puede despertar a tu agente

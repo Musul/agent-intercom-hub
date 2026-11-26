@@ -44,10 +44,14 @@ describe('equipo: política de entrada, freno de bucles, nombre automático y re
     assert.equal(ht.body.result.count, 1);
     assert.equal(ht.body.result.messages[0].id, sent.data.messageId);
     assert.equal(ht.body.result.messages[0].wake, false);
-    assert.equal((await humanTurn(kb, 'web')).body.result.count, 0, 'no se entrega dos veces');
+    // al menos una vez: mientras no se confirme vuelve a salir (marcado redelivered); el cliente descarta los que ya metió
+    const again = (await humanTurn(kb, 'web')).body.result;
+    assert.equal(again.count, 1);
+    assert.equal(again.messages[0].redelivered, true);
     const inbox = await B('check_inbox');
     assert.equal(inbox.data.messages[0].heldReason, 'retenido_por_politica');
     await B('acknowledge_messages', { messageIds: [sent.data.messageId] });
+    assert.equal((await humanTurn(kb, 'web')).body.result.count, 0, 'confirmado ya no sale');
     await B('set_inbound_policy', { inbound: 'auto' });
   });
 
@@ -146,6 +150,7 @@ describe('equipo: política de entrada, freno de bucles, nombre automático y re
     assert.deepEqual(first.session.tags, ['sam-api', 'feat-login']);
     const second = await init(auto);
     assert.equal(second.identity.named, false, 'el nombre está abierto en otro chat: se pregunta');
+    assert.equal(second.identity.suggestedName, 'sam-api-feat-login-2', 'propone uno libre');
     // Sin la cabecera, como antes: sin nombre
     const plain = await init({ 'X-Session-Suggest': 'otra-cosa' });
     assert.equal(plain.identity.named, false);

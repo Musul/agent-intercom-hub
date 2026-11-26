@@ -60,7 +60,7 @@ documentación hechos; quedan los pasos de operador marcados **Falta**. Guía de
 - [ ] **Clave de cifrado de las copias fuera de la VM:** guardar /etc/intercom/backup.pass en el gestor de contraseñas del equipo (sin ella no hay restauración).
 - [ ] **Bucket para la copia externa** (BACKUP_GCS_URI en /etc/default/intercom-ops) y **canal de avisos** (ALERT_WEBHOOK_URL o NTFY_URL): hoy la copia cifrada queda en el mismo disco y los avisos solo en syslog.
 - [ ] Disco de la VM al 80 %: vigilar (el monitoreo avisa al 90 %).
-- [ ] **Paridad de clientes:** nombre automático y etiquetas en OpenCode, Antigravity y pi; turno humano (retenidos al escribir y reanudar el freno) en OpenCode, pi y Antigravity; herramientas de tareas, ask_user, política y panel en la extensión de pi (hoy expone 6).
+- [x] **Paridad de clientes** (2026-11-26): nombre automático y etiquetas en OpenCode, Antigravity y pi; turno humano en OpenCode (al escribir) y pi (los retenidos se añaden al mensaje del usuario); pi expone también tareas, `ask_user`, política y panel. Antigravity no tiene evento de «el usuario escribió»: su turno humano sigue siendo solo al abrir el chat. Probado con un servidor local (OpenCode y pi simulados, puente real); **falta probarlo dentro de OpenCode, pi y agy**.
 - [ ] Retirar las llaves de compañeros guardadas en claro en la PC del operador (~/.agentintercom/equipo/) cuando cada uno se dé de alta con invitación.
 
 **Siguiente paso para el operador, en orden:** (1) Owner: `channelsEnabled`; (2) desplegar el hub nuevo con `PUBLIC_URL` y

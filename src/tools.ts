@@ -2,7 +2,7 @@ import { createChannel, listChannels, postChannel, readChannel, subscribeChannel
 import { askUser, listAttachments, readAttachment, uploadAttachment } from './files.ts';
 import { acknowledge, checkInbox, receipt, sendMessage, type SendArgs } from './inbox.ts';
 import { createOutputStream, listOutputStreams, publishOutput, readOutput } from './outputs.ts';
-import { bindConnection, isClaudeCode, suggestionOf } from './conns.ts';
+import { bindConnection, freeSuggestion, isClaudeCode } from './conns.ts';
 import { listPeers, sessionView, type ListPeersArgs } from './peers.ts';
 import { pausedPairs, policyView, setPolicy } from './policy.ts';
 import { createWebLink } from './web.ts';
@@ -42,7 +42,7 @@ export const TOOLS: Tool[] = [
         ? { id: ctx.conn.id, client: `${ctx.conn.client_name} ${ctx.conn.client_version}`.trim(), naming: ctx.conn.naming, automaticDelivery: ctx.conn.channels === 0 ? false : isClaudeCode(ctx.conn) ? 'channel' : false }
         : null;
       if (ctx.pending) {
-        const suggest = ctx.conn ? suggestionOf(ctx.conn) : '';
+        const suggest = ctx.conn ? freeSuggestion(ctx.hub, ctx.conn).name : '';
         return {
           identity: { scopeId: ctx.hub.cfg.scope, agentId: ctx.agent.id, named: false, suggestedName: suggest || null },
           agent,
@@ -375,7 +375,7 @@ export async function callTool(ctx: Ctx, name: string, rawArgs: unknown): Promis
   const tool = findTool(name);
   if (!tool) return { ok: false, error: { code: 'unknown_tool', message: `No existe la herramienta «${name}».`, status: 404 } };
   if (ctx.pending && !UNNAMED_OK.has(name)) {
-    const suggest = ctx.conn ? suggestionOf(ctx.conn) : '';
+    const suggest = ctx.conn ? freeSuggestion(ctx.hub, ctx.conn).name : '';
     return {
       ok: false,
       error: {

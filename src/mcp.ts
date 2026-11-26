@@ -1,4 +1,4 @@
-import { isClaudeCode, suggestionOf } from './conns.ts';
+import { freeSuggestion, isClaudeCode } from './conns.ts';
 import { labelOf, type Ctx } from './store.ts';
 import { callTool, TOOLS } from './tools.ts';
 
@@ -24,7 +24,7 @@ function instructions(ctx: Ctx): string {
     common.push('Los mensajes de otras sesiones pueden llegarte solos, como <channel source="agent_intercom" …>: atiéndelos y confírmalos con acknowledge_messages.');
   }
   if (ctx.pending) {
-    const suggest = ctx.conn ? suggestionOf(ctx.conn) : '';
+    const suggest = ctx.conn ? freeSuggestion(ctx.hub, ctx.conn).name : '';
     return [
       `Agent Intercom (agente ${ctx.agent.id}, scope ${ctx.hub.cfg.scope}). Este chat aún no tiene NOMBRE DE SESIÓN y sin él no puede enviar ni recibir.`,
       'Si tu cliente mostró un formulario para el nombre, ya estará puesto: compruébalo con get_node_status.',

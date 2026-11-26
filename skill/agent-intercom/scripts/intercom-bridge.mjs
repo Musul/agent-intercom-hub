@@ -13,7 +13,7 @@
  */
 import { basename } from 'node:path';
 import { createInterface } from 'node:readline';
-import { agentProcess, ascii, instanceOf, intercomKey, intercomUrl, slug } from './intercom-proc.mjs';
+import { agentProcess, ascii, gitInfo, instanceOf, intercomKey, intercomUrl, slug } from './intercom-proc.mjs';
 
 const base = intercomUrl(process.argv.includes('--url') ? process.argv[process.argv.indexOf('--url') + 1] : undefined);
 const key = intercomKey();
@@ -25,11 +25,16 @@ if (!base || !key) {
 
 const proc = agentProcess();
 const instance = instanceOf(proc);
+const git = gitInfo(process.cwd());
 const headers = {
   Authorization: `Bearer ${key}`,
   'X-Session-Cwd': ascii(process.cwd()),
   'X-Session-Harness': process.env.INTERCOM_HARNESS || proc?.harness || 'mcp-bridge',
-  'X-Session-Suggest': slug(basename(process.cwd())) || 'sesion',
+  // Nombre automático (repo + rama) si está libre, etiquetas para el reparto de tareas y descripción.
+  'X-Session-Suggest': git.suggest || slug(basename(process.cwd())) || 'sesion',
+  ...(process.env.INTERCOM_ASK_NAME === '1' ? {} : { 'X-Session-Auto': '1' }),
+  ...(git.tags.length ? { 'X-Session-Tags': git.tags.join(',') } : {}),
+  'X-Session-Description': ascii([`repo ${git.repo}`, git.branch ? `rama ${git.branch}` : '', 'antigravity'].filter(Boolean).join(' - ')),
   ...(instance ? { 'X-Session-Instance': instance } : {}),
   ...(process.env.INTERCOM_SESSION ? { 'X-Session-Name': slug(process.env.INTERCOM_SESSION) } : {}),
 };

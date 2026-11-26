@@ -2,8 +2,11 @@
  * Agent Intercom para OpenCode 2.x — entrega automática.
  *
  * Complementa al MCP `agent_intercom` (configurado en opencode.json):
- *  1. añade a esa conexión MCP las cabeceras de este proceso y carpeta (X-Session-Instance, X-Session-Cwd,
- *     X-Session-Suggest): así el hub sabe qué sesión es la de este chat, y el formulario sugiere la carpeta;
+ *  1. añade a esa conexión MCP las cabeceras de este proceso y carpeta (X-Session-Instance, X-Session-Cwd, nombre
+ *     sugerido repo + rama con X-Session-Auto, etiquetas y descripción): el chat se nombra solo con su repo (solo
+ *     pregunta si ese nombre está abierto en otro chat) y el reparto de tareas por etiquetas le llega;
+ *  1b. cuando escribes, avisa al hub de tu turno (/v1/human-turn): se reanudan las conversaciones pausadas por el
+ *     freno de bucles y entran en el chat los mensajes retenidos (política hold, tope por hora…);
  *  2. cuando escribes en un chat de esta carpeta, abre un stream de «oyente» (la sesión figura online) y cada mensaje
  *     nuevo entra solo en ese chat (session.prompt), aunque el agente esté esperando;
  *  3. tras INTERCOM_IDLE_MINUTES (60) sin escribir en esa carpeta, cierra el stream: la sesión pasa a offline y los
@@ -14,6 +17,7 @@
  * Instalación: copia este archivo a ~/.config/opencode/plugins/agent-intercom.js. Necesita AGENT_INTERCOM_KEY y la URL
  * (AGENT_INTERCOM_URL o ~/.agentintercom/config.json). Opcional: INTERCOM_SESSION para un nombre fijo.
  */
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -44,6 +48,24 @@ const slug = (s) =>
 const ascii = (s) => s.replace(/[^\x20-\x7e]/g, '?').slice(0, 200);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+const DEFAULT_BRANCHES = new Set(['main', 'master', 'develop', 'dev', 'trunk', 'head']);
+/** Repo (raíz de git o la carpeta) y rama: nombre sugerido «repo» o «repo-rama» y etiquetas [repo, rama]. */
+function gitInfo(dir) {
+  let repo = basename(dir);
+  let branch = '';
+  try {
+    const out = execFileSync('git', ['rev-parse', '--show-toplevel', '--abbrev-ref', 'HEAD'], { cwd: dir, encoding: 'utf8', timeout: 1500, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }).trim().split(/\r?\n/);
+    if (out[0]) repo = basename(out[0]);
+    branch = (out[1] ?? '').trim();
+  } catch {
+    /* no es un repo de git */
+  }
+  const r = slug(repo);
+  const b = slug(branch.replace(/[\\/]+/g, '-'));
+  const extra = b && !DEFAULT_BRANCHES.has(b);
+  return { repo: r, branch: b, suggest: extra ? slug(`${r}-${b}`) : r, tags: [r, ...(extra ? [b.slice(0, 24)] : [])].filter(Boolean) };
+}
+
 function note(m) {
   const tipo = m.kind === 'channel' ? 'aviso de canal' : m.kind === 'human' ? 'respuesta de una persona' : m.kind === 'task' ? 'aviso de tarea' : m.kind === 'system' ? 'aviso del servidor' : m.mode;
   return [
@@ -63,6 +85,7 @@ async function setup(ctx) {
   const dir = ctx.location?.directory ?? process.cwd();
   const started = Math.round(Date.now() - process.uptime() * 1000);
   const instance = `oc-${process.pid}-${started}-${createHash('sha256').update(dir).digest('hex').slice(0, 8)}`;
+  const git = gitInfo(dir);
 
   // 1. Cabeceras de este proceso y carpeta en la conexión MCP (OpenCode reconecta con ellas).
   try {
@@ -76,7 +99,10 @@ async function setup(ctx) {
           'X-Session-Instance': instance,
           'X-Session-Cwd': ascii(dir),
           'X-Session-Harness': 'opencode',
-          'X-Session-Suggest': slug(basename(dir)) || 'opencode',
+          'X-Session-Suggest': git.suggest || 'opencode',
+          ...(process.env.INTERCOM_ASK_NAME === '1' ? {} : { 'X-Session-Auto': '1' }),
+          ...(git.tags.length ? { 'X-Session-Tags': git.tags.join(',') } : {}),
+          'X-Session-Description': ascii([`repo ${git.repo}`, git.branch ? `rama ${git.branch}` : '', 'opencode'].filter(Boolean).join(' - ')),
           ...(process.env.INTERCOM_SESSION ? { 'X-Session-Name': slug(process.env.INTERCOM_SESSION) } : {}),
         },
       });
@@ -120,6 +146,18 @@ async function setup(ctx) {
       if (m.wake === false) continue;
       seen.add(m.id);
       await ctx.session.prompt({ sessionID: target, text: note(m) });
+    }
+  }
+
+  /** Turno humano: reanuda las conversaciones pausadas y mete en el chat los mensajes retenidos que esperaban. */
+  async function humanTurn() {
+    const res = await fetch(`${BASE}/v1/human-turn`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: '{}', signal: AbortSignal.timeout(8000) });
+    const j = await res.json();
+    if (!j.ok || !target) return;
+    for (const m of j.result.messages) {
+      if (seen.has(m.id)) continue;
+      seen.add(m.id);
+      await ctx.session.prompt({ sessionID: target, text: `${note(m)}\n(Llegó retenido mientras no estabas: ${m.heldReason}.)` });
     }
   }
 
@@ -175,6 +213,7 @@ async function setup(ctx) {
         target = p.sessionID;
         lastActivity = Date.now();
         void listen();
+        await humanTurn().catch(() => undefined);
       })().catch(() => undefined);
     });
   } catch {

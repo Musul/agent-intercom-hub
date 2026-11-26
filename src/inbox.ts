@@ -265,19 +265,20 @@ export async function checkInbox(ctx: Ctx, args: { limit?: number; waitMs?: numb
 }
 
 /**
- * Los mensajes retenidos (no despertaron a nadie) que esta sesión aún no recibió: se marcan entregados y se devuelven
- * para que el hook del turno humano los meta en el chat. Hay que confirmarlos con acknowledge_messages igual.
+ * Los mensajes retenidos (no despertaron a nadie) que esta sesión aún no confirmó: se marcan entregados y se devuelven
+ * para que el hook del turno humano los meta en el chat. Al menos una vez, como check_inbox: un oyente que ya los vio con
+ * check_inbox no los hace desaparecer de aquí, y cada cliente descarta los que ya metió en su chat. Hay que confirmarlos.
  */
 export function takeHeld(ctx: Ctx, limit: number) {
   const { hub, session } = ctx;
   const rows = all<MsgRow>(
     hub.db,
-    `SELECT * FROM messages WHERE to_session = ? AND state = 'queued' AND wake = 0 AND (expires_at IS NULL OR expires_at > ?) ORDER BY created_at, rowid LIMIT ?`,
+    `SELECT * FROM messages WHERE to_session = ? AND state IN ('queued','delivered') AND wake = 0 AND (expires_at IS NULL OR expires_at > ?) ORDER BY created_at, rowid LIMIT ?`,
     session.id, Date.now(), clamp(limit, 1, 100),
   );
   const t = Date.now();
-  for (const m of rows) run(hub.db, `UPDATE messages SET state = 'delivered', delivered_at = ? WHERE id = ?`, t, m.id);
-  return { count: rows.length, messages: rows.map((m) => msgView({ ...m, state: 'delivered', delivered_at: t }, ctx, false)) };
+  for (const m of rows) if (m.state === 'queued') run(hub.db, `UPDATE messages SET state = 'delivered', delivered_at = ? WHERE id = ?`, t, m.id);
+  return { count: rows.length, messages: rows.map((m) => msgView(m.state === 'queued' ? { ...m, state: 'delivered', delivered_at: t } : m, ctx, m.state === 'delivered')) };
 }
 
 export function acknowledge(ctx: Ctx, ids: string[]) {
