@@ -12,10 +12,14 @@
  *   --hook-rewake          hook de Claude Code con `asyncRewake` (SessionStart, UserPromptSubmit, Stop): en la
  *                          terminal arranca solo, sin que el agente haga nada, y sale con código 2 para despertarlo.
  *                          No hace nada con el canal activo, fuera de la terminal interactiva o si ya hay uno vivo.
- *   --hook-context         hooks SessionStart y Stop en VS Code y otros IDE (donde asyncRewake bloquearía el arranque):
+ *   --hook-context         hooks SessionStart y Stop en VS Code y otros IDE (donde asyncRewake bloquearía el arranque),
+ *                          SOLO si se pidió el modo en vivo en el IDE (install.mjs --ide-live → config.json ideLive):
  *                          al empezar le pide al agente que lance el vigilante en segundo plano; al terminar cada turno,
- *                          si el chat tiene sesión y el vigilante no corre (p. ej. acaba de entregar un mensaje), no
- *                          deja terminar al agente hasta que lo relance. Así queda encendido hasta cerrar el chat.
+ *                          si el vigilante no corre, no deja terminar al agente hasta que lo relance. Cuesta una llamada
+ *                          de herramienta por turno: por defecto el IDE recibe por hooks al terminar el turno (como Codex).
+ *
+ * Los mensajes retenidos (política hold, tope por hora, remitente no permitido, freno de bucle) no despiertan: el
+ * vigilante los ignora y entran con el siguiente turno del usuario (intercom-hook.mjs).
  *
  * Necesita AGENT_INTERCOM_KEY (o ~/.agentintercom/agent.key); la URL sale de --url, AGENT_INTERCOM_URL o
  * ~/.agentintercom/config.json. Sin dependencias. Node ≥ 18.
@@ -25,7 +29,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { agentProcess, instanceOf, intercomKey, intercomUrl } from './intercom-proc.mjs';
+import { agentProcess, instanceOf, intercomConfig, intercomKey, intercomUrl, kindLabel } from './intercom-proc.mjs';
 
 const { values } = parseArgs({
   options: {
@@ -83,7 +87,8 @@ if (values['hook-context']) {
   const url = intercomUrl(values.url);
   const apiKey = intercomKey();
   // Solo en IDE (VS Code, JetBrains, escritorio). En la terminal lo hace --hook-rewake; en -p y SDK, nada.
-  const instance = /vscode|jetbrains|desktop/i.test(entry) && url && apiKey ? instanceOf(agentProcess('cc')) : null;
+  // Modo en vivo en el IDE: opcional (relanzar el vigilante cada turno gasta tokens). Sin él, entrega intercom-hook.mjs.
+  const instance = intercomConfig().ideLive === true && /vscode|jetbrains|desktop/i.test(entry) && url && apiKey ? instanceOf(agentProcess('cc')) : null;
   if (!instance) process.exit(0);
   const lock = lockOf(instance);
   const cmd = `node "${self}" --auto --exit-on-message`;
@@ -262,7 +267,9 @@ async function main() {
         seen.add(m.id);
         // Al terminar con cada mensaje, solo cuenta lo que el agente aún no recogió (lo ya recogido no lo despierta).
         if (exitOnMessage && m.redelivered) continue;
-        const tipo = m.kind === 'channel' ? 'aviso de canal' : m.kind === 'human' ? 'respuesta de una persona' : m.mode;
+        // Retenido: no despierta (llega con el siguiente turno del usuario).
+        if (m.wake === false) continue;
+        const tipo = kindLabel(m.kind, m.mode);
         lines.push(`[intercom] mensaje ${m.id} de ${clean(m.from, 80)} (${tipo}). Léelo con check_inbox${preview ? ` · «${clean(m.body, preview)}»` : ''}`);
       }
       if (lines.length) {
