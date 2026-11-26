@@ -56,7 +56,7 @@ const SESSIONS_FULL = `
   WHERE s.retired_at IS NULL AND a.disabled_at IS NULL`;
 
 export function sessionView(hub: Hub, s: SessionFull, selfId: string | null, now: number) {
-  const presence = hub.presence(s.id, s.last_seen_at, now);
+  const p = hub.presenceOf(s.id, now);
   return {
     id: labelOf(s),
     agentId: s.agent_id,
@@ -70,9 +70,12 @@ export function sessionView(hub: Hub, s: SessionFull, selfId: string | null, now
     cwd: s.cwd,
     statusText: s.status_text,
     lifecycle: s.lifecycle,
-    presence,
-    // `ready`: hay alguien atendiendo ahora o hace poco. `reachable`: el mensaje queda en cola aunque no esté.
-    ready: presence !== 'away',
+    // online: chat abierto que recibe en automático. offline + motivo: cerrada, sin_entrega_automatica, sin_confirmar.
+    presence: p.presence,
+    offlineReason: p.reason,
+    connected: p.connected,
+    // `ready`: lo leerá ya. `reachable`: el mensaje queda en cola aunque no esté.
+    ready: p.presence === 'online',
     reachable: true,
     lastSeenAt: iso(s.last_seen_at),
     registeredAt: iso(s.created_at),
@@ -148,8 +151,9 @@ export function listPeers(ctx: Ctx, args: ListPeersArgs) {
   }));
   if (args.presence) views = views.filter((v) => v.presence === args.presence);
   if (!tokens.length) {
-    const order: Record<string, number> = { online: 0, recent: 1, away: 2 };
-    views.sort((a, b) => order[a.presence]! - order[b.presence]! || a.id.localeCompare(b.id));
+    // primero las online, luego las que tienen el chat abierto, luego el resto
+    const rank = (v: { presence: string; connected: boolean }) => (v.presence === 'online' ? 0 : v.connected ? 1 : 2);
+    views.sort((a, b) => rank(a) - rank(b) || a.id.localeCompare(b.id));
   }
   const limit = clamp(args.limit ?? 100, 1, 500);
   return { scopeId: hub.cfg.scope, ...(match ? { match } : {}), count: Math.min(views.length, limit), peers: views.slice(0, limit) };
@@ -158,7 +162,7 @@ export function listPeers(ctx: Ctx, args: ListPeersArgs) {
 const candidateView = (hub: Hub, s: SessionFull, now: number) => ({
   id: labelOf(s),
   description: s.description,
-  presence: hub.presence(s.id, s.last_seen_at, now),
+  presence: hub.presenceOf(s.id, now).presence,
 });
 
 /**

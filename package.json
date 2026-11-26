@@ -9,13 +9,13 @@
   },
   "bin": {
     "intercom": "src/cli.ts",
-    "intercom-watch": "src/watch.ts"
+    "intercom-watch": "skill/agent-intercom/scripts/intercom-watch.mjs"
   },
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning src/server.ts",
     "dev": "node --disable-warning=ExperimentalWarning --watch src/server.ts",
     "cli": "node --disable-warning=ExperimentalWarning src/cli.ts",
-    "watch": "node --disable-warning=ExperimentalWarning src/watch.ts",
+    "watch": "node skill/agent-intercom/scripts/intercom-watch.mjs",
     "test": "node --disable-warning=ExperimentalWarning --test --test-force-exit --test-timeout=60000 \"test/**/*.test.ts\"",
     "typecheck": "tsc --noEmit"
   },

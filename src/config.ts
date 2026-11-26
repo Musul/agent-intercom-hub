@@ -4,8 +4,14 @@ export interface Config {
   dbPath: string;
   /** Espacio de trabajo único de esta instancia (aparece en `get_node_status` y en cada mensaje). */
   scope: string;
-  /** Una sesión sin conexión abierta cuenta como «recent» este tiempo tras su última petición. */
+  /** Una conexión MCP sin stream abierto cuenta como «chat abierto» este tiempo tras su última petición. */
   recentMs: number;
+  /** Un mensaje entregado en automático (push) que la sesión no confirma en este plazo la deja «offline». */
+  pushConfirmMs: number;
+  /** Conexiones MCP (chats) que conserva cada agente; las más viejas se cierran. */
+  maxConnectionsPerAgent: number;
+  /** Días que se conservan las conexiones cerradas o inactivas. */
+  connectionKeepDays: number;
   /** Peticiones autenticadas por minuto y por clave. */
   ratePerMinute: number;
   /** Intentos fallidos de autenticación por minuto y por IP. */
@@ -57,6 +63,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, over: Partial<C
     dbPath: env.INTERCOM_DB || './data/intercom.db',
     scope: env.INTERCOM_SCOPE || 'default',
     recentMs: num(env.PRESENCE_RECENT_SECONDS, 120) * 1000,
+    pushConfirmMs: num(env.PUSH_CONFIRM_SECONDS, 300) * 1000,
+    maxConnectionsPerAgent: num(env.MAX_CONNECTIONS_PER_AGENT, 500),
+    connectionKeepDays: num(env.CONNECTION_KEEP_DAYS, 14),
     ratePerMinute: num(env.RATE_LIMIT_PER_MINUTE, 240),
     authFailPerMinute: num(env.AUTH_FAIL_PER_MINUTE, 30),
     maxBodyBytes: num(env.MAX_BODY_BYTES, 1024 * 1024),
@@ -68,7 +77,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, over: Partial<C
     maxMessageChars: num(env.MAX_MESSAGE_CHARS, 32 * 1024),
     maxSessionsPerAgent: num(env.MAX_SESSIONS_PER_AGENT, 200),
     maxPendingPerSession: num(env.MAX_PENDING_PER_SESSION, 1000),
-    maxStreamsPerSession: num(env.MAX_STREAMS_PER_SESSION, 3),
+    maxStreamsPerSession: num(env.MAX_STREAMS_PER_SESSION, 5),
     maxWaitersPerSession: num(env.MAX_WAITERS_PER_SESSION, 5),
     maxChannels: num(env.MAX_CHANNELS, 500),
     maxOpenTasks: num(env.MAX_OPEN_TASKS, 5000),

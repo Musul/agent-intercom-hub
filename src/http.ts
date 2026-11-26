@@ -1,10 +1,11 @@
 import http from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { hashKey } from './keys.ts';
-import { handleRpc } from './mcp.ts';
+import { handleRpc, SUPPORTED } from './mcp.ts';
 import { fetchAttachment, storeAttachment } from './files.ts';
+import { askName, closeConnection, createConnection, getConnection, isClaudeCode, touchConnection } from './conns.ts';
 import { ensureSession, type SessionMeta } from './peers.ts';
-import { one, run, type AgentRow, type Ctx, type Hub } from './store.ts';
+import { one, run, type AgentRow, type ConnRow, type Ctx, type Hub, type SessionRow, type StreamClient } from './store.ts';
 import { callTool, TOOLS } from './tools.ts';
 import { ToolError } from './util.ts';
 
@@ -183,29 +184,20 @@ async function handle(hub: Hub, req: IncomingMessage, res: ServerResponse, rate:
   if (limited) return sendAndClose(req, res, 429, { error: 'rate_limited' }, { 'Retry-After': String(limited) });
 
   let ctx: Ctx;
+  if (path === '/mcp') {
+    try {
+      return await handleMcp(hub, req, res, url, auth);
+    } catch (e) {
+      if (e instanceof ToolError) return sendAndClose(req, res, e.status, { error: e.code, message: e.message });
+      throw e;
+    }
+  }
+
   try {
     ctx = await buildCtx(hub, req, url, auth, res);
   } catch (e) {
     if (e instanceof ToolError) return sendAndClose(req, res, e.status, { error: e.code, message: e.message });
     throw e;
-  }
-
-  if (path === '/mcp') {
-    if (req.method === 'GET' && (header(req, 'accept') ?? '').includes('text/event-stream')) return openStream(hub, ctx, req, res);
-    if (req.method !== 'POST') return sendAndClose(req, res, 405, { error: 'method_not_allowed' }, { Allow: 'GET, POST' });
-    let body: unknown;
-    try {
-      body = JSON.parse((await readBody(req, cfg.maxBodyBytes)).toString('utf8'));
-    } catch (e) {
-      if (e instanceof ToolError) return sendAndClose(req, res, e.status, { error: e.code, message: e.message }, {}, e.status === 413 ? LINGER_MAX : DRAIN_MAX);
-      return sendJson(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'JSON inválido.' } });
-    }
-    const { payload } = await handleRpc(ctx, body);
-    if (payload === undefined) {
-      res.writeHead(202, SEC_HEADERS);
-      return void res.end();
-    }
-    return sendJson(res, 200, payload);
   }
 
   // Espejo REST de las herramientas, para curl y scripts: GET /v1/tools · POST /v1/tools/<nombre>
@@ -270,24 +262,115 @@ async function handle(hub: Hub, req: IncomingMessage, res: ServerResponse, rate:
   return sendJson(res, 404, { error: 'not_found' });
 }
 
-/** GET /mcp con Accept: text/event-stream. Mientras esté abierta, la sesión figura «online»; además recibe un aviso por cada mensaje nuevo. */
+/**
+ * GET /mcp con Accept: text/event-stream: el stream que dura lo que dura el chat. Con él la sesión puede estar
+ * «online»: si el cliente recibe en automático (Claude Code con canal, vigilante, extensión de pi) se le entrega
+ * por aquí cada mensaje nuevo y lo que esperaba en el buzón. A un chat sin nombre se le pide el nombre por aquí.
+ */
 function openStream(hub: Hub, ctx: Ctx, req: IncomingMessage, res: ServerResponse): void {
-  if ((hub.streams.get(ctx.session.id)?.size ?? 0) >= hub.cfg.maxStreamsPerSession) {
+  const sessionId = ctx.pending ? null : ctx.session.id;
+  const open = ctx.conn ? hub.connStreams.get(ctx.conn.id)?.size ?? 0 : sessionId ? hub.streams.get(sessionId)?.size ?? 0 : 0;
+  if (open >= hub.cfg.maxStreamsPerSession) {
     return sendJson(res, 429, { error: 'too_many_streams', message: 'Esta sesión ya tiene demasiadas conexiones SSE abiertas.' });
   }
   res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', ...SEC_HEADERS, Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
   res.write(': connected\n\n');
-  const client = { write: (s: string) => void res.write(s), end: () => void res.end() };
-  hub.addStream(ctx.session.id, client);
+  // Vigilante o extensión que avisa al agente (X-Intercom-Listener: 1); Claude Code recibe por canal salvo que diga que no lo tiene.
+  const listener = !ctx.conn && (header(req, 'x-intercom-listener') === '1' || header(req, 'x-session-harness') === 'intercom-watch');
+  const channel = !!ctx.conn && isClaudeCode(ctx.conn) && ctx.conn.channels !== 0;
+  const client: StreamClient = { write: (s: string) => void res.write(s), end: () => void res.end(), connId: ctx.conn?.id ?? null, push: listener || channel, channel };
+  hub.addStream(sessionId, client);
   const timer = setInterval(() => res.write(': ping\n\n'), hub.cfg.sseKeepaliveMs);
   timer.unref();
   res.on('close', () => {
     clearInterval(timer);
-    hub.removeStream(ctx.session.id, client);
     const now = Date.now();
-    run(hub.db, 'UPDATE sessions SET last_seen_at = ? WHERE id = ?', now, ctx.session.id);
-    hub.lastTouch.set(ctx.session.id, now);
+    for (const sid of hub.removeStream(client)) {
+      run(hub.db, 'UPDATE sessions SET last_seen_at = ? WHERE id = ?', now, sid);
+      hub.lastTouch.set(sid, now);
+    }
   });
+  if (sessionId) hub.deliver(sessionId, client); // lo que esperaba en el buzón (una sola vez por chat)
+  else if (ctx.conn) askName(hub, ctx.conn.id);
+}
+
+const NULL_SESSION = (agentId: string, now: number): SessionRow => ({
+  id: '', agent_id: agentId, name: '', description: '', tags: '[]', harness: null, cwd: null, status_text: '', lifecycle: 'idle', created_at: now, last_seen_at: now, retired_at: null,
+});
+
+/** Contexto de una petición que llega por una conexión MCP con estado (Mcp-Session-Id). */
+function connCtx(hub: Hub, auth: Auth, conn: ConnRow, res: ServerResponse): Ctx {
+  const now = Date.now();
+  touchConnection(hub, conn, now);
+  const ac = new AbortController();
+  res.on('close', () => ac.abort());
+  const base = { hub, agent: auth.agent, conn, keyId: auth.keyId, now, signal: ac.signal, pinned: auth.pinned };
+  const row = conn.session_id ? one<SessionRow>(hub.db, 'SELECT * FROM sessions WHERE id = ?', conn.session_id) : undefined;
+  if (row) return { ...base, session: ensureSession(hub, auth.agent, row.name, {}, now), warnings: [] };
+  return { ...base, session: NULL_SESSION(auth.agent.id, now), pending: true, warnings: ['Este chat aún no tiene nombre de sesión: pregunta al usuario y llama a register_session.'] };
+}
+
+
+/**
+ * /mcp. `initialize` sin Mcp-Session-Id abre una conexión con estado (un chat) y devuelve su id en esa cabecera;
+ * con la cabecera, cada petición se atribuye a esa conexión. DELETE la cierra (chat cerrado). Sin cabecera y sin
+ * `initialize` funciona como siempre: sin estado, la sesión sale de X-Session-Name.
+ */
+async function handleMcp(hub: Hub, req: IncomingMessage, res: ServerResponse, url: URL, auth: Auth): Promise<void> {
+  const sid = header(req, 'mcp-session-id');
+  let conn: ConnRow | undefined;
+  if (sid) {
+    conn = getConnection(hub, sid, auth.agent.id);
+    if (!conn) return sendAndClose(req, res, 404, { jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Sesión MCP desconocida o cerrada: vuelve a inicializar.' } });
+  }
+  if (req.method === 'DELETE') {
+    if (!conn) return sendAndClose(req, res, 405, { error: 'method_not_allowed' }, { Allow: 'GET, POST, DELETE' });
+    closeConnection(hub, conn.id);
+    res.writeHead(204, SEC_HEADERS);
+    return void res.end();
+  }
+  if (req.method === 'GET' && (header(req, 'accept') ?? '').includes('text/event-stream')) {
+    return openStream(hub, conn ? connCtx(hub, auth, conn, res) : await buildCtx(hub, req, url, auth, res), req, res);
+  }
+  if (req.method !== 'POST') return sendAndClose(req, res, 405, { error: 'method_not_allowed' }, { Allow: 'GET, POST, DELETE' });
+  let body: unknown;
+  try {
+    body = JSON.parse((await readBody(req, hub.cfg.maxBodyBytes)).toString('utf8'));
+  } catch (e) {
+    if (e instanceof ToolError) return sendAndClose(req, res, e.status, { error: e.code, message: e.message }, {}, e.status === 413 ? LINGER_MAX : DRAIN_MAX);
+    return sendJson(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'JSON inválido.' } });
+  }
+  let created = false;
+  if (!conn && body && typeof body === 'object' && !Array.isArray(body) && (body as { method?: unknown }).method === 'initialize') {
+    const p = ((body as { params?: unknown }).params ?? {}) as { protocolVersion?: unknown; capabilities?: unknown; clientInfo?: { name?: unknown; version?: unknown } };
+    const asked = (header(req, 'x-session-name') ?? url.searchParams.get('session') ?? undefined)?.toLowerCase();
+    if (auth.pinned && asked && asked !== auth.pinned) throw new ToolError('session_pinned', `Esta clave está fijada a la sesión «${auth.pinned}»; no puede usar «${asked}».`);
+    const ch = header(req, 'x-intercom-channels');
+    conn = createConnection(
+      hub, auth.agent, auth.keyId,
+      {
+        clientName: typeof p.clientInfo?.name === 'string' ? p.clientInfo.name : '',
+        clientVersion: typeof p.clientInfo?.version === 'string' ? p.clientInfo.version : '',
+        capabilities: p.capabilities ?? {},
+        protocol: typeof p.protocolVersion === 'string' && SUPPORTED.includes(p.protocolVersion) ? p.protocolVersion : SUPPORTED[1]!,
+      },
+      {
+        name: asked, pinned: auth.pinned, instance: header(req, 'x-session-instance'), suggest: header(req, 'x-session-suggest'),
+        cwd: header(req, 'x-session-cwd'), harness: header(req, 'x-session-harness'), description: header(req, 'x-session-description'),
+        channels: ch === '1' ? 1 : ch === '0' ? 0 : null,
+      },
+      Date.now(),
+    );
+    created = true;
+  }
+  const ctx = conn ? connCtx(hub, auth, conn, res) : await buildCtx(hub, req, url, auth, res);
+  const { payload } = await handleRpc(ctx, body);
+  const extra: Record<string, string> = created && conn ? { 'Mcp-Session-Id': conn.id } : {};
+  if (payload === undefined) {
+    res.writeHead(202, { ...SEC_HEADERS, ...extra });
+    return void res.end();
+  }
+  return sendJson(res, 200, payload, extra);
 }
 
 export function createHttpServer(hub: Hub): http.Server {

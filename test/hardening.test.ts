@@ -237,7 +237,7 @@ describe('vigilante (watch) y copia de seguridad', () => {
     const ka = b.agent('ana');
     const kb = b.agent('beto');
     await tool(b.base, ka, 'a', 'set_session_info', { description: 'emisor' });
-    const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'src/watch.ts', '--url', b.base, '--session', 'vig'], {
+    const child = spawn(process.execPath, ['skill/agent-intercom/scripts/intercom-watch.mjs', '--url', b.base, '--session', 'vig'], {
       env: { ...process.env, AGENT_INTERCOM_KEY: kb },
       cwd: new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'),
     });

@@ -6,7 +6,8 @@
 		timeouts {
 			read_header 10s
 			read_body 20s
-			write 60s
+			# Sin «write»: es un plazo para la respuesta ENTERA y cortaba cada 60 s los streams SSE (GET /mcp),
+			# que deben durar lo que dura el chat (presencia online y entrega automática). El hub manda un ping cada 15 s.
 			idle 2m
 		}
 	}
@@ -28,10 +29,12 @@ intercom.example.com {
 		Cache-Control "no-store"
 		-Server
 	}
-	request_body {
-		max_size 1MiB
-	}
+
+	# MCP: POST (peticiones), GET (stream SSE del chat) y DELETE (cierre del chat)
 	handle /mcp {
+		request_body {
+			max_size 1MiB
+		}
 		reverse_proxy 127.0.0.1:8787 {
 			flush_interval -1
 			transport http {
@@ -40,6 +43,32 @@ intercom.example.com {
 			}
 		}
 	}
+
+	# Espejo REST (/v1/tools/*): lo usan el vigilante (intercom-watch) y la extensión de pi
+	handle /v1/attachments {
+		request_body {
+			max_size 17MiB
+		}
+		reverse_proxy 127.0.0.1:8787 {
+			transport http {
+				dial_timeout 3s
+				response_header_timeout 60s
+			}
+		}
+	}
+	handle /v1/* {
+		request_body {
+			max_size 1MiB
+		}
+		reverse_proxy 127.0.0.1:8787 {
+			flush_interval -1
+			transport http {
+				dial_timeout 3s
+				response_header_timeout 35s
+			}
+		}
+	}
+
 	handle {
 		respond "not found" 404
 	}

@@ -144,7 +144,7 @@ un proceso pequeño que imprime **una línea por mensaje nuevo** y mantiene abie
 Si tu cliente lee la salida de un proceso en segundo plano (en Claude Code, la herramienta *Monitor*), esa línea llega al agente.
 
 ```bash
-AGENT_INTERCOM_KEY=aik_… node src/watch.ts --url https://intercom.example.com --session proyecto-a
+AGENT_INTERCOM_KEY=aik_… node skill/agent-intercom/scripts/intercom-watch.mjs --url https://intercom.example.com --session proyecto-a
 # [intercom] vigilando ana/proyecto-a (pendientes: 0)
 # [intercom] mensaje msg_… de admin/demo (request). Léelo con check_inbox
 ```

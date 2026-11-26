@@ -24,8 +24,16 @@ Agente (persona o sistema)        id: ana   nombre: "Ana Torres"
   (`X-Session-Name`). Tiene buzón propio, descripción, etiquetas, cwd, harness, estado y presencia.
 - **Dirección:** `agente/sesion`. Es lo que se usa en `message_peer` y lo que devuelve `list_peers`.
 
-Sin `X-Session-Name` la sesión se llama `default`; todas las conexiones «sin nombre» de una misma clave comparten
-esa sesión (como antes). El servidor lo avisa en `initialize` (`instructions`) y en `get_node_status.warnings`.
+- **Conexión (chat):** cada chat abierto es una conexión MCP con estado (`Mcp-Session-Id`). **Nace sin nombre** y
+  el usuario elige el de su sesión: el servidor se lo pide con un formulario MCP (`elicitation/create`) en cuanto
+  el cliente abre su stream; si el cliente no tiene formularios o el usuario lo cierra, el agente lo pregunta en el
+  chat y llama a `register_session`. Hasta entonces solo puede nombrarse o consultar (`session_unnamed`).
+  Un nombre abierto en otro chat se rechaza (`session_in_use`); uno existente pero cerrado retoma su buzón.
+
+Con `X-Session-Name` (o una clave fijada) la conexión nace ya nombrada, como antes; `X-Session-Instance` (el id del
+chat en el cliente) hace que el mismo chat que reconecta recupere su nombre sin volver a preguntar. Las peticiones
+**sin estado** (REST, `curl`, clientes que no guardan `Mcp-Session-Id`) siguen resolviendo la sesión por cabecera y,
+sin ella, usan `default`, compartida por todas las conexiones sin nombre de esa clave.
 
 ## 3. Cómo se llega a «la sesión del proyecto-a de Ana»
 
@@ -48,20 +56,25 @@ encontrable. Resolución de destinatarios en `message_peer`:
 
 ## 4. Presencia: qué significa de verdad
 
-Cada sesión tiene tres estados, calculados por el servidor:
+Dos estados, calculados por el servidor sin que el agente haga nada:
 
 | `presence` | Significa |
 |---|---|
-| `online` | tiene una conexión **SSE abierta** (`GET /mcp`) ahora mismo |
-| `recent` | hizo una petición hace menos de `PRESENCE_RECENT_SECONDS` (120 s) o cerró hace poco |
-| `away` | nada reciente |
+| `online` | **chat abierto y recibe en automático**: tiene un stream abierto (`GET /mcp`) de un cliente que mete los mensajes en el chat (Claude Code con canal, vigilante, extensión de pi) y no dejó sin recoger ningún mensaje entregado hace más de `PUSH_CONFIRM_SECONDS` (300 s) |
+| `offline` | todo lo demás, con `offlineReason`: `cerrada` (chat cerrado: stream cortado, `DELETE` o sin actividad), `sin_entrega_automatica` (abierto, pero su cliente no recibe solo) o `sin_confirmar` (se le entregó un mensaje y no lo recogió) |
 
-`ready` = `online` o `recent`. `reachable` es siempre `true`: el mensaje **se guarda** aunque la sesión esté
-`away`; lo recibirá cuando vuelva.
+`connected` dice si hay un chat abierto aunque no reciba solo; `ready` = `online`. `reachable` es siempre `true`: el
+mensaje **se guarda** aunque la sesión esté offline, y se le entrega al volver.
 
-**Honestidad sobre los límites:** que una sesión esté `away` no significa que esté cerrada (un agente esperando a su
-humano no hace peticiones), y `online` solo existe si el cliente abre el stream SSE. Es información, no una garantía
-de que alguien vaya a leer ya.
+El stream dura lo que dura el chat: el servidor manda un `: ping` cada 15 s y, si el proceso del cliente muere, la
+conexión TCP se cierra y la sesión pasa a offline en el acto. Claude Code no manda `DELETE` al salir (Codex sí); el
+cierre se detecta igual por el stream. Los contadores de streams se guardan en la base (`sessions.streams`,
+`push_streams`) para que la CLI vea lo mismo que el servidor; al arrancar se ponen a cero.
+
+**Límites:** `sin_confirmar` es una deducción: un agente ocupado en un turno largo puede tardar en recoger un mensaje
+(vuelve a `online` en cuanto lo recoge). Y Claude Code descarta en silencio el canal si no se lanzó con el flag o si la
+organización no lo permite; el `headersHelper` avisa del flag (`X-Intercom-Channels`), pero la política de la
+organización solo se nota cuando un mensaje queda sin recoger.
 
 ## 5. Entrega de mensajes
 
@@ -73,6 +86,10 @@ message_peer ──► queued ──► check_inbox ──► delivered ──�
                                   └── si no se confirma, vuelve a salir (redelivered: true)
 ```
 
+- **Entrega automática:** a un chat de Claude Code con stream abierto, cada mensaje en cola se le empuja como
+  `notifications/claude/channel` (una vez por conexión; al abrirse, también lo que esperaba). Claude Code lo mete en
+  el chat como `<channel source="agent_intercom" …>` y despierta al agente aunque esté esperando a su usuario. El
+  vigilante (`intercom-watch.mjs`, para el Monitor) y la extensión de pi hacen lo mismo por su lado con el aviso `inbox`.
 - `check_inbox(waitMs)` espera hasta 25 s y despierta en cuanto llega algo (sin sondeo).
 - `message_receipt` muestra el estado y la respuesta enlazada, sin el contenido.
 - `mode: "response"` + `responseTo` devuelve el mensaje **a la sesión que lo envió**, sin necesidad de `peer`.
@@ -86,11 +103,15 @@ canales y los **reclamos** de tareas son por sesión.
 
 ## 6. Protocolo
 
-- **MCP Streamable HTTP, sin estado:** cada `POST /mcp` es independiente (no hay `Mcp-Session-Id`); se autentica con
-  la clave y se resuelve la sesión por cabecera. Responde JSON simple (no SSE) y `202` a las notificaciones.
-  Versiones aceptadas: 2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05.
-- **`GET /mcp` con `Accept: text/event-stream`:** stream de presencia y avisos (`notifications/message` con
-  `{event:"inbox", pending:N}`), con un `: ping` cada 15 s. Sin ese `Accept`, `405`.
+- **MCP Streamable HTTP con estado:** `initialize` abre una conexión (tabla `connections`, persistente: sobrevive a
+  reinicios del servidor) y devuelve `Mcp-Session-Id`; cada petición se autentica con la clave y se atribuye a esa
+  conexión. `DELETE /mcp` la cierra. Sin la cabecera funciona como antes, sin estado. Responde JSON simple (no SSE)
+  y `202` a notificaciones y respuestas del cliente. Versiones aceptadas: 2025-11-25, 2025-06-18, 2025-03-26,
+  2024-11-05. `server/discover` (revisión «moderna» 2026-07-28) se rechaza a propósito: el cliente vuelve a
+  `initialize`, y Claude Code solo entrega canales en las revisiones anteriores.
+- **`GET /mcp` con `Accept: text/event-stream`:** el stream del chat: entrega automática, avisos
+  (`notifications/message` `{event:"inbox", pending:N}`), peticiones del servidor (`elicitation/create`) y un
+  `: ping` cada 15 s. Sin ese `Accept`, `405`.
 - **Espejo REST:** `GET /v1/tools`, `POST /v1/tools/<nombre>` con los argumentos como cuerpo. Mismo auth, mismas
   reglas, mismas herramientas. Pensado para `curl` y scripts.
 
@@ -135,9 +156,11 @@ de 90. Los mensajes **pendientes no se borran nunca**. Copia de seguridad: `sqli
 
 | Decisión | Por qué | Coste |
 |---|---|---|
-| Sin estado por petición (no `Mcp-Session-Id`) | Funciona con `curl`, con proxies y con reinicios del servidor | La presencia real depende del stream SSE opcional |
+| Conexión con estado por chat (`Mcp-Session-Id`), persistida en la base | Cada chat es su propia sesión, con el nombre que elige el usuario; sobrevive a reinicios | Una fila por chat (tope por agente, limpieza a los `CONNECTION_KEEP_DAYS`) |
+| Sin estado sigue funcionando (REST, `curl`) | Scripts, vigilante y extensión de pi no necesitan MCP | Sin cabecera de nombre caen en `default` |
 | `agent` solo → error si hay varias sesiones | Un mensaje mal encaminado es peor que un error claro | Un paso más para el agente (elige entre las candidatas) |
 | Las sesiones se crean solas por cabecera | Cero trámite por sesión nueva | Quien tiene la clave puede crear sesiones (tope por agente) |
 | SQLite en un nodo | Cero dependencias, copia de seguridad en caliente (`backup`) | Sin alta disponibilidad: si cae el nodo, se restaura la última copia |
 | `check_inbox` entrega al menos una vez | Un agente que se cae no pierde mensajes | Hay que confirmar con `acknowledge_messages` |
-| Dos procesos con el **mismo nombre** de sesión | — | Comparten buzón, igual que antes con la clave. Usa nombres distintos |
+| Un nombre abierto en otro chat se rechaza al nombrar (`session_in_use`) | Cada chat ve solo sus mensajes | Con `takeover` (o con `X-Session-Name` fijo) dos chats pueden compartir buzón, como antes |
+| online = recibe en automático | Es lo que el equipo necesita saber: «¿lo leerá ya?» | Codex, OpenCode y Antigravity figuran offline (`sin_entrega_automatica`) aunque tengan el chat abierto |

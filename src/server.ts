@@ -6,6 +6,8 @@ import { Hub, one } from './store.ts';
 
 const cfg = loadConfig();
 const hub = new Hub(cfg, openDb(cfg.dbPath));
+// Al arrancar no hay ningún stream abierto: los contadores de presencia de la ejecución anterior no valen.
+hub.db.exec('UPDATE sessions SET streams = 0, push_streams = 0 WHERE streams <> 0 OR push_streams <> 0');
 const server = createHttpServer(hub);
 
 server.listen(cfg.port, cfg.host, () => {
@@ -18,7 +20,7 @@ server.listen(cfg.port, cfg.host, () => {
 const timer = setInterval(() => {
   try {
     const r = maintenance(hub);
-    if (r.messages || r.attachments || r.audit) console.log('[mantenimiento]', r);
+    if (r.messages || r.attachments || r.audit || r.connections) console.log('[mantenimiento]', r);
   } catch (e) {
     console.error('[mantenimiento]', e);
   }

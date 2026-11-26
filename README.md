@@ -20,7 +20,7 @@ escribe con `message_peer`. Si hubiera dudas, el servidor **no adivina**: devuel
 
 ```bash
 npm install                     # solo herramientas de desarrollo (tipos); el servidor no necesita nada
-npm test                        # 51 pruebas, todas por HTTP real contra el servidor
+npm test                        # 59 pruebas, todas por HTTP real contra el servidor
 
 npm run cli -- agent:add ana --name "Ana Torres"
 npm run cli -- key:add ana                  # imprime la clave UNA vez
@@ -32,7 +32,13 @@ Con Docker: `docker compose up -d --build` y, para administrar,
 
 ## Cómo se conecta una sesión
 
-Cada sesión se identifica con **su clave** (quién eres) y el header **`X-Session-Name`** (qué sesión eres):
+**Cada chat es una sesión, y la nombra el usuario.** Al conectarse, un chat nuevo no tiene nombre: el servidor se lo
+pide al usuario con un formulario MCP (o el agente lo pregunta y llama a `register_session`). Si el nombre ya existe y
+su chat está cerrado, retoma ese buzón; si está abierto en otro chat, pide otro. Clientes probados: Claude Code, Codex,
+OpenCode (MCP), pi (extensión) y Antigravity (configuración documentada, sin probar). Guía por cliente:
+[skill/agent-intercom/CONECTAR.md](skill/agent-intercom/CONECTAR.md).
+
+La clave dice **quién eres**. Con el header **`X-Session-Name`** la sesión nace con nombre fijo (scripts, vigilantes, configuraciones antiguas):
 
 ```json
 {
@@ -68,7 +74,9 @@ Guía completa (varias sesiones, `curl`, migración desde el servidor actual): [
 | `PORT` / `HOST` | `8787` / `0.0.0.0` | Dónde escucha |
 | `INTERCOM_DB` | `./data/intercom.db` | Archivo SQLite (en Docker, `/data/intercom.db`) |
 | `INTERCOM_SCOPE` | `default` | Nombre del espacio de trabajo |
-| `PRESENCE_RECENT_SECONDS` | `120` | Cuánto cuenta una sesión como «recent» tras su última petición |
+| `PRESENCE_RECENT_SECONDS` | `120` | Cuánto cuenta un chat sin stream como abierto tras su última petición |
+| `PUSH_CONFIRM_SECONDS` | `300` | Un mensaje entregado en automático que no se recoge en este plazo deja la sesión `offline` (`sin_confirmar`) |
+| `MAX_CONNECTIONS_PER_AGENT` / `CONNECTION_KEEP_DAYS` | `500` / `14` | Chats (conexiones MCP) que se guardan por agente y días que se conservan los cerrados |
 | `RATE_LIMIT_PER_MINUTE` | `240` | Peticiones por minuto y por clave |
 | `AUTH_FAIL_PER_MINUTE` | `30` | Claves falsas por minuto y por IP |
 | `MAX_BODY_BYTES` | `1048576` | Tope del cuerpo de una petición |
@@ -77,7 +85,7 @@ Guía completa (varias sesiones, `curl`, migración desde el servidor actual): [
 | `MAX_STORAGE_BYTES` | `1073741824` | Espacio total de adjuntos (507 al llenarse) |
 | `MAX_CONCURRENT_UPLOADS` / `_DOWNLOADS` | `2` / `4` | Subidas y descargas grandes a la vez (cada subida de 16 MiB ocupa ~32 MiB de memoria) |
 | `MAX_PENDING_PER_SESSION` | `1000` | Mensajes sin atender que admite un buzón |
-| `MAX_STREAMS_PER_SESSION` / `MAX_WAITERS_PER_SESSION` | `3` / `5` | Streams SSE y esperas largas por sesión |
+| `MAX_STREAMS_PER_SESSION` / `MAX_WAITERS_PER_SESSION` | `5` / `5` | Streams SSE (por sesión o por chat) y esperas largas por sesión |
 | `MAX_CHANNELS` / `MAX_OPEN_TASKS` / `MAX_OUTPUT_STREAMS` | `500` / `5000` / `200` | Topes globales |
 | `REQUEST_TIMEOUT_SECONDS` | `60` | Plazo para recibir una petición completa |
 | `MAX_CONNECTIONS` | `2000` | Conexiones simultáneas |
@@ -89,16 +97,18 @@ Guía completa (varias sesiones, `curl`, migración desde el servidor actual): [
 
 ## Pruebas
 
-- `npm test` — 51 pruebas por HTTP real contra el servidor.
+- `npm test` — 59 pruebas por HTTP real contra el servidor.
 - `node adversarial/run.mjs` — **batería adversarial en Docker**: contenedores endurecidos atacados desde fuera
   (autenticación, aislamiento, inyección, protocolo HTTP crudo, agotamiento de recursos, concurrencia, kill -9, disco lleno).
   Detalle y resultados en [docs/adversarial.md](docs/adversarial.md).
 
 ## Límites conocidos
 
-- Un agente **inactivo no se despierta solo**: los mensajes esperan en su buzón hasta que llama a `check_inbox`.
-  Para avisarle existe el **vigilante** (`src/watch.ts`), que imprime una línea por mensaje nuevo y lo mantiene `online`; solo
-  sirve si el cliente lee la salida de un proceso en segundo plano (p. ej. el Monitor de Claude Code).
+- **Entrega automática** (la sesión figura `online`): Claude Code lanzado con el canal
+  (`--dangerously-load-development-channels server:agent_intercom`; en planes Team/Enterprise el admin debe permitir
+  `channelsEnabled`), la extensión de pi, o el **vigilante** (`skill/agent-intercom/scripts/intercom-watch.mjs`) con el
+  Monitor de Claude Code. Codex, OpenCode y Antigravity no pueden despertar al agente: sus mensajes esperan a que revise
+  el buzón y figuran `offline` (`sin_entrega_automatica`).
 - Un solo nodo (SQLite, con copia en caliente: `intercom backup`). Alta disponibilidad real exigiría mover el almacenamiento
   a Postgres (reescritura de la capa de datos, que hoy es síncrona); no está hecho.
 - Los flujos de salida se consultan por sondeo (`read_output` con `afterSeq`); no hay SSE por flujo.

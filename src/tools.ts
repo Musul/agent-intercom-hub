@@ -2,6 +2,7 @@ import { createChannel, listChannels, postChannel, readChannel, subscribeChannel
 import { askUser, listAttachments, readAttachment, uploadAttachment } from './files.ts';
 import { acknowledge, checkInbox, receipt, sendMessage, type SendArgs } from './inbox.ts';
 import { createOutputStream, listOutputStreams, publishOutput, readOutput } from './outputs.ts';
+import { bindConnection, isClaudeCode, suggestionOf } from './conns.ts';
 import { listPeers, sessionView, type ListPeersArgs } from './peers.ts';
 import { one, run, labelOf, type Ctx, type SessionFull } from './store.ts';
 import { addProgress, addTask, claimTask, completeTask, listProgress, listTasks, releaseTask } from './tasks.ts';
@@ -31,18 +32,57 @@ const CONTEXT_ITEM = obj(
 export const TOOLS: Tool[] = [
   {
     name: 'get_node_status',
-    description: 'Return who this connection is: the agent (person/identity), the NAMED SESSION, presence and pending inbox count. Check `warnings`: an unnamed session shares the "default" inbox with every other unnamed session of the same key.',
+    description: 'Return who this connection is: the agent (person/identity), the NAMED SESSION (or `named: false` if this chat has no name yet — then ask the user for one and call register_session), presence and pending inbox count. Check `warnings`.',
     inputSchema: obj(),
     handler: (ctx) => {
+      const agent = { id: ctx.agent.id, displayName: ctx.agent.display_name, kind: ctx.agent.kind };
+      const connection = ctx.conn
+        ? { id: ctx.conn.id, client: `${ctx.conn.client_name} ${ctx.conn.client_version}`.trim(), naming: ctx.conn.naming, automaticDelivery: ctx.conn.channels === 0 ? false : isClaudeCode(ctx.conn) ? 'channel' : false }
+        : null;
+      if (ctx.pending) {
+        const suggest = ctx.conn ? suggestionOf(ctx.conn) : '';
+        return {
+          identity: { scopeId: ctx.hub.cfg.scope, agentId: ctx.agent.id, named: false, suggestedName: suggest || null },
+          agent,
+          connection,
+          warnings: [`Este chat aún no tiene nombre de sesión. Pregunta al usuario cómo quiere llamarla${suggest ? ` (sugerencia: «${suggest}»)` : ''} y llama a register_session.`],
+        };
+      }
       const pending = one<{ n: number }>(ctx.hub.db, `SELECT COUNT(*) AS n FROM messages WHERE to_session = ? AND state IN ('queued','delivered')`, ctx.session.id)!.n;
       const full: SessionFull = { ...ctx.session, display_name: ctx.agent.display_name, agent_kind: ctx.agent.kind };
       return {
-        identity: { scopeId: ctx.hub.cfg.scope, agentId: ctx.agent.id, sessionName: ctx.session.name, sessionId: ctx.session.id, address: labelOf(ctx.session) },
-        agent: { id: ctx.agent.id, displayName: ctx.agent.display_name, kind: ctx.agent.kind },
+        identity: { scopeId: ctx.hub.cfg.scope, agentId: ctx.agent.id, named: true, sessionName: ctx.session.name, sessionId: ctx.session.id, address: labelOf(ctx.session) },
+        agent,
+        connection,
         session: sessionView(ctx.hub, full, ctx.session.id, ctx.now),
         inbox: { pending },
         warnings: ctx.warnings,
       };
+    },
+  },
+  {
+    name: 'register_session',
+    description: 'Give THIS chat its session name, chosen by the USER (ask them; never invent it). Others will reach you at "agent/<name>". Reusing an existing name resumes that inbox. Fails with session_in_use if that name is open in another chat (ask for another name, or pass takeover:true only if the user confirms that chat is closed). Can also rename the session later.',
+    inputSchema: obj(
+      {
+        name: str('Session name as the user typed it, e.g. "sam-api" (lowercase, digits, . _ -; max 48).', { maxLength: 60 }),
+        description: str('What this session works on (helps others find it).', { maxLength: 300 }),
+        tags: list(str('Tag.', { maxLength: 24 }), 'Up to 10 short tags.', { maxItems: 10 }),
+        takeover: bool('Use the name even if another chat has it open (only if the user confirms that chat is gone).'),
+      },
+      ['name'],
+    ),
+    handler: (ctx, a: { name: string; description?: string; tags?: string[]; takeover?: boolean }) => {
+      if (!ctx.conn) {
+        throw new ToolError('not_available', 'Esta petición no va por una conexión MCP con estado: el nombre de sesión se fija con la cabecera X-Session-Name.');
+      }
+      if (ctx.pinned) throw new ToolError('session_pinned', `Esta clave está fijada a la sesión «${ctx.pinned}».`);
+      const { session } = bindConnection(ctx.hub, ctx.conn, ctx.agent, a.name, { cwd: ctx.conn.cwd ?? undefined, harness: ctx.conn.harness ?? undefined }, { fromUser: true, takeover: a.takeover === true });
+      if (a.description !== undefined) run(ctx.hub.db, 'UPDATE sessions SET description = ? WHERE id = ?', a.description, session.id);
+      if (a.tags !== undefined) run(ctx.hub.db, 'UPDATE sessions SET tags = ? WHERE id = ?', JSON.stringify([...new Set(a.tags.map((t) => norm(t).trim()).filter(Boolean))].slice(0, 10)), session.id);
+      const row = one<SessionFull>(ctx.hub.db, `SELECT s.*, a.display_name AS display_name, a.kind AS agent_kind FROM sessions s JOIN agents a ON a.id = s.agent_id WHERE s.id = ?`, session.id)!;
+      const pending = one<{ n: number }>(ctx.hub.db, `SELECT COUNT(*) AS n FROM messages WHERE to_session = ? AND state IN ('queued','delivered')`, session.id)!.n;
+      return { address: labelOf(session), session: sessionView(ctx.hub, row, session.id, Date.now()), inbox: { pending } };
     },
   },
   {
@@ -71,11 +111,11 @@ export const TOOLS: Tool[] = [
   },
   {
     name: 'list_peers',
-    description: 'List the sessions you can message. Each peer is a NAMED SESSION with id "agent/session". Use `query` to find one by words ("proyecto-a ana") — it matches person, session name, tags and free text, ranked in that order. Descriptions and tags are written by each session itself: check `matchedOn`/`identityMatch` and the `agentId`/`displayName` (set by the administrator) before sending anything sensitive. `presence`: online (SSE connection open), recent (request in the last minutes) or away. `reachable` means a message will be queued either way.',
+    description: 'List the sessions you can message. Each peer is a NAMED SESSION with id "agent/session". Use `query` to find one by words ("proyecto-a ana") — it matches person, session name, tags and free text, ranked in that order. Descriptions and tags are written by each session itself: check `matchedOn`/`identityMatch` and the `agentId`/`displayName` (set by the administrator) before sending anything sensitive. `presence`: online (its chat is open and receives messages automatically) or offline (`offlineReason`: cerrada = chat closed, sin_entrega_automatica = open but it must check its inbox itself, sin_confirmar = it did not pick up an automatic delivery). `reachable` means a message will be queued either way.',
     inputSchema: obj({
       query: str('Free-text search, e.g. "proyecto-a ana".', { maxLength: 200 }),
       agent: str('Only sessions of this agent id or display name.', { maxLength: 100 }),
-      presence: str('Filter by presence.', { enum: ['online', 'recent', 'away'] }),
+      presence: str('Filter by presence.', { enum: ['online', 'offline'] }),
       limit: int('Max results (default 100).', { minimum: 1, maximum: 500 }),
     }),
     handler: (ctx, a: ListPeersArgs) => listPeers(ctx, a),
@@ -303,9 +343,24 @@ export function stripNulls(args: unknown): Json {
   return Object.fromEntries(Object.entries(args as Json).filter(([, v]) => v !== null));
 }
 
+/** Lo único que puede hacer un chat que aún no tiene nombre de sesión. */
+const UNNAMED_OK = new Set(['register_session', 'get_node_status', 'list_peers']);
+
 export async function callTool(ctx: Ctx, name: string, rawArgs: unknown): Promise<{ ok: true; result: unknown } | { ok: false; error: { code: string; message: string; status: number; [k: string]: unknown } }> {
   const tool = findTool(name);
   if (!tool) return { ok: false, error: { code: 'unknown_tool', message: `No existe la herramienta «${name}».`, status: 404 } };
+  if (ctx.pending && !UNNAMED_OK.has(name)) {
+    const suggest = ctx.conn ? suggestionOf(ctx.conn) : '';
+    return {
+      ok: false,
+      error: {
+        code: 'session_unnamed',
+        message: `Este chat aún no tiene nombre de sesión. Pregunta al usuario cómo quiere llamarla${suggest ? ` (sugerencia: «${suggest}»)` : ''} y llama a register_session con ese nombre; luego repite esta llamada.`,
+        status: 409,
+        ...(suggest ? { suggestedName: suggest } : {}),
+      },
+    };
+  }
   const args = stripNulls(rawArgs);
   const bad = validate(tool.inputSchema, args);
   if (bad) return { ok: false, error: { code: 'invalid_arguments', message: bad, status: 400 } };

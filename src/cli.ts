@@ -115,7 +115,9 @@ try {
         sesiones: one<{ n: number }>(hub.db, 'SELECT COUNT(*) n FROM sessions WHERE retired_at IS NULL')!.n,
         mensajes_pendientes: one<{ n: number }>(hub.db, `SELECT COUNT(*) n FROM messages WHERE state IN ('queued','delivered')`)!.n,
         canales: one<{ n: number }>(hub.db, 'SELECT COUNT(*) n FROM channels')!.n,
-        tareas_abiertas: all(hub.db, `SELECT state, COUNT(*) n FROM tasks GROUP BY state`),
+        tareas_abiertas: one<{ n: number }>(hub.db, `SELECT COUNT(*) n FROM tasks WHERE state <> 'done'`)!.n,
+        sesiones_online: one<{ n: number }>(hub.db, 'SELECT COUNT(*) n FROM sessions WHERE retired_at IS NULL AND push_streams > 0')!.n,
+        chats_abiertos: one<{ n: number }>(hub.db, 'SELECT COUNT(*) n FROM connections WHERE closed_at IS NULL AND last_seen_at >= ?', Date.now() - hub.cfg.recentMs)!.n,
       });
       break;
     default:

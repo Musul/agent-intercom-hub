@@ -1,5 +1,6 @@
 import { existsSync, statSync, unlinkSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
+import { purgeConnections } from './conns.ts';
 import { generateKey, hashKey } from './keys.ts';
 import { all, audit, labelOf, one, run, type AgentRow, type Hub } from './store.ts';
 import { AGENT_ID_RE, iso, newId, SESSION_NAME_RE, ToolError } from './util.ts';
@@ -69,7 +70,10 @@ export function listKeys(hub: Hub) {
 export function listSessions(hub: Hub) {
   return all<{ id: string; agent_id: string; name: string; description: string; last_seen_at: number; retired_at: number | null }>(
     hub.db, 'SELECT id, agent_id, name, description, last_seen_at, retired_at FROM sessions ORDER BY agent_id, name',
-  ).map((s) => ({ address: labelOf(s), sessionId: s.id, description: s.description, presence: hub.presence(s.id, s.last_seen_at, Date.now()), lastSeenAt: iso(s.last_seen_at), retired: s.retired_at !== null }));
+  ).map((s) => {
+    const p = hub.presenceOf(s.id, Date.now());
+    return { address: labelOf(s), sessionId: s.id, description: s.description, presence: p.presence, offlineReason: p.reason ?? '', lastSeenAt: iso(s.last_seen_at), retired: s.retired_at !== null };
+  });
 }
 
 export function retireSession(hub: Hub, address: string): void {
@@ -80,13 +84,14 @@ export function retireSession(hub: Hub, address: string): void {
 }
 
 /** Limpieza periódica: mensajes ya cerrados, adjuntos y auditoría antiguos. */
-export function maintenance(hub: Hub, now = Date.now()): { messages: number; attachments: number; audit: number; outputs: number } {
+export function maintenance(hub: Hub, now = Date.now()): { messages: number; attachments: number; audit: number; outputs: number; connections: number } {
+  const connections = purgeConnections(hub, now);
   const cutoff = now - hub.cfg.retentionDays * 86_400_000;
   const messages = Number(run(hub.db, `DELETE FROM messages WHERE state IN ('acknowledged','expired') AND created_at < ?`, cutoff).changes);
   const attachments = Number(run(hub.db, 'DELETE FROM attachments WHERE created_at < ?', cutoff).changes);
   const outputs = Number(run(hub.db, 'DELETE FROM outputs WHERE created_at < ?', cutoff).changes);
   const aud = Number(run(hub.db, 'DELETE FROM audit WHERE at < ?', now - 90 * 86_400_000).changes);
-  return { messages, attachments, audit: aud, outputs };
+  return { messages, attachments, audit: aud, outputs, connections };
 }
 
 /** Copia de seguridad consistente EN CALIENTE (`VACUUM INTO`): se puede hacer con el servidor en marcha. No pisa archivos. */

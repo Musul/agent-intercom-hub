@@ -100,15 +100,26 @@ describe('sesiones con nombre: varias por clave, cada una con su buzón', () => 
     assert.equal(st.data.warnings.length, 1);
   });
 
-  it('presencia: online mientras hay SSE abierto, recent al cerrarlo', async () => {
-    const stream = await new Promise<http.IncomingMessage>((resolve, reject) => {
-      const req = http.request(`${b.base}/mcp`, { method: 'GET', headers: { ...auth(ana, 'proyecto-a'), Accept: 'text/event-stream' } }, resolve);
-      req.on('error', reject);
-      req.end();
-    });
+  it('presencia: online con un oyente que recibe en automático, offline (cerrada) al cerrarlo', async () => {
+    const open = (extra: Record<string, string>) =>
+      new Promise<http.IncomingMessage>((resolve, reject) => {
+        const req = http.request(`${b.base}/mcp`, { method: 'GET', headers: { ...auth(ana, 'proyecto-a'), Accept: 'text/event-stream', ...extra } }, resolve);
+        req.on('error', reject);
+        req.end();
+      });
+    const peer = async () => (await T(admin, 'demo', 'list_peers', { agent: 'ana' })).data.peers.find((p: { session: string }) => p.session === 'proyecto-a');
+    const presence = async () => (await peer()).presence;
+
+    // un stream que nadie lee en automático: chat abierto, pero offline
+    const mudo = await open({});
+    let p = await peer();
+    assert.deepEqual([p.presence, p.offlineReason, p.connected], ['offline', 'sin_entrega_automatica', true]);
+    mudo.destroy();
+    await new Promise((r) => setTimeout(r, 100));
+
+    const stream = await open({ 'X-Intercom-Listener': '1' });
     assert.equal(stream.statusCode, 200);
     assert.match(String(stream.headers['content-type']), /event-stream/);
-    const presence = async () => (await T(admin, 'demo', 'list_peers', { agent: 'ana' })).data.peers.find((p: { session: string }) => p.session === 'proyecto-a').presence;
     assert.equal(await presence(), 'online');
 
     // un mensaje nuevo se avisa por el propio stream
@@ -120,7 +131,8 @@ describe('sesiones con nombre: varias por clave, cada una con su buzón', () => 
 
     stream.destroy();
     await new Promise((r) => setTimeout(r, 100));
-    assert.equal(await presence(), 'recent');
+    p = await peer();
+    assert.deepEqual([p.presence, p.offlineReason], ['offline', 'cerrada']);
     const m = (await T(ana, 'proyecto-a', 'check_inbox')).data.messages;
     await T(ana, 'proyecto-a', 'acknowledge_messages', { messageIds: m.map((x: { id: string }) => x.id) });
   });

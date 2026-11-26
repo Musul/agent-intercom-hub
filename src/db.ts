@@ -171,6 +171,34 @@ const MIGRATIONS: string[] = [
     PRIMARY KEY (stream_id, seq)
   );
   `,
+  // 3: conexiones MCP con estado (una por chat abierto: Mcp-Session-Id) y entrega automática (push)
+  `
+  CREATE TABLE connections (
+    id             TEXT PRIMARY KEY,
+    agent_id       TEXT NOT NULL REFERENCES agents(id),
+    key_id         TEXT NOT NULL,
+    session_id     TEXT REFERENCES sessions(id),
+    client_name    TEXT NOT NULL DEFAULT '',
+    client_version TEXT NOT NULL DEFAULT '',
+    capabilities   TEXT NOT NULL DEFAULT '{}',
+    protocol       TEXT NOT NULL DEFAULT '',
+    instance       TEXT,
+    suggest        TEXT,
+    cwd            TEXT,
+    harness        TEXT,
+    channels       INTEGER,
+    naming         TEXT NOT NULL DEFAULT 'pending',
+    created_at     INTEGER NOT NULL,
+    last_seen_at   INTEGER NOT NULL,
+    closed_at      INTEGER
+  );
+  CREATE INDEX connections_session ON connections (session_id, closed_at);
+  CREATE INDEX connections_instance ON connections (agent_id, instance);
+  ALTER TABLE sessions ADD COLUMN streams INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE sessions ADD COLUMN push_streams INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE messages ADD COLUMN pushed_at INTEGER;
+  ALTER TABLE messages ADD COLUMN pushed_conn TEXT;
+  `,
 ];
 
 export function openDb(path: string): DatabaseSync {
