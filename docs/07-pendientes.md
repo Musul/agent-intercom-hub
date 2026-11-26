@@ -55,6 +55,14 @@ Contexto: con la cuenta compartida, la mensajería nativa entre sesiones unía l
 une sesiones de la misma cuenta. Agent Intercom pasa a ser el camino entre personas. Código, pruebas (84 en verde) y
 documentación hechos; quedan los pasos de operador marcados **Falta**. Guía de puesta en marcha: `docs/09-operacion-hub.md`.
 
+**Desplegado el 2026-11-26** en la VM (contenedor en /srv/agent-intercom, código anterior en app.prev-*, copia previa de la base en data/pre-deploy-*.db): hub nuevo, Caddy con /web y /join, filtro de fail2ban, copias automáticas + copia cifrada diaria (por ahora solo dentro de la VM) y monitoreo cada 5 min (por ahora solo a syslog). Ensayo de restauración hecho con la primera copia. Instalado también en la PC del operador (Claude Code).
+
+- [ ] **Clave de cifrado de las copias fuera de la VM:** guardar /etc/intercom/backup.pass en el gestor de contraseñas del equipo (sin ella no hay restauración).
+- [ ] **Bucket para la copia externa** (BACKUP_GCS_URI en /etc/default/intercom-ops) y **canal de avisos** (ALERT_WEBHOOK_URL o NTFY_URL): hoy la copia cifrada queda en el mismo disco y los avisos solo en syslog.
+- [ ] Disco de la VM al 80 %: vigilar (el monitoreo avisa al 90 %).
+- [ ] **Paridad de clientes:** nombre automático y etiquetas en OpenCode, Antigravity y pi; turno humano (retenidos al escribir y reanudar el freno) en OpenCode, pi y Antigravity; herramientas de tareas, ask_user, política y panel en la extensión de pi (hoy expone 6).
+- [ ] Retirar las llaves de compañeros guardadas en claro en la PC del operador (~/.agentintercom/equipo/) cuando cada uno se dé de alta con invitación.
+
 **Siguiente paso para el operador, en orden:** (1) Owner: `channelsEnabled`; (2) desplegar el hub nuevo con `PUBLIC_URL` y
 `BACKUP_DIR`, Caddy y fail2ban; (3) `invite:create` para cada persona y que cada una ejecute `install.mjs --join`;
 (4) instalar copia externa y monitoreo, y hacer el ensayo de restauración; (5) probar en interactivo (abajo).
