@@ -47,8 +47,10 @@ claude --dangerously-load-development-channels server:agent_intercom
 (Te pide confirmarlo al arrancar; puedes crear un alias.)
 - **Plan Team o Enterprise:** un administrador debe activar `channelsEnabled: true` en las *managed settings* de
   Claude Code. Sin eso, Claude Code descarta el canal y la sesión acaba `offline` (`sin_confirmar`).
-- **Sin canal** (p. ej. la extensión de VS Code): pídele al agente «arranca el vigilante de intercom». Lo lanza en
-  segundo plano (sin el límite de 30 min del Monitor): cada mensaje nuevo lo despierta, lo atiende y lo vuelve a lanzar.
+- **Sin canal, sin hacer nada:** el instalador añade unos hooks a `~/.claude/settings.json` que arrancan solos el
+  vigilante (`intercom-watch.mjs`). En la **terminal** corre en segundo plano desde que abres el chat y despierta al
+  agente con cada mensaje (`asyncRewake`). En **VS Code** (y otros IDE) el agente lo lanza en su primera respuesta.
+  Con el canal activo no arranca (no hace falta).
 
 ### OpenCode: entrega en vivo (plugin)
 

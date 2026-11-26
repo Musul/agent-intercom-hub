@@ -80,6 +80,22 @@ if (client === 'claude') {
   execFileSync(claude, ['mcp', 'add-json', server, JSON.stringify(config), '--scope', 'user'], { stdio: 'inherit' });
   cpSync(skillDir, join(home, '.claude', 'skills', 'agent-intercom'), { recursive: true });
   done.push('MCP agent_intercom (scope user) y skill en ~/.claude/skills');
+  // Hooks: el vigilante arranca solo (terminal: asyncRewake; VS Code/IDE: el agente lo lanza en su primera respuesta).
+  const settingsFile = join(home, '.claude', 'settings.json');
+  const watch = script('intercom-watch.mjs');
+  const rewake = { type: 'command', command: `node "${watch}" --hook-rewake`, asyncRewake: true, timeout: 86400 };
+  const context = { type: 'command', command: `node "${watch}" --hook-context`, timeout: 15 };
+  try {
+    const settings = readJson(settingsFile, {});
+    settings.hooks ??= {};
+    for (const ev of ['SessionStart', 'UserPromptSubmit', 'Stop']) {
+      const list = (settings.hooks[ev] ?? []).map((g) => (Array.isArray(g.hooks) ? { ...g, hooks: g.hooks.filter((h) => !String(h.command ?? '').includes('intercom-watch.mjs')) } : g));
+      settings.hooks[ev] = [...list.filter((g) => !Array.isArray(g.hooks) || g.hooks.length), { hooks: ev === 'SessionStart' ? [rewake, context] : [rewake] }];
+    }
+    writeJson(settingsFile, settings);
+  } catch (e) {
+    manual(settingsFile, e.message, JSON.stringify({ hooks: { SessionStart: [{ hooks: [rewake, context] }], UserPromptSubmit: [{ hooks: [rewake] }], Stop: [{ hooks: [rewake] }] } }, null, 2));
+  }
   console.log(`\nAbre un chat NUEVO: te pedirá el nombre de la sesión. Para recibir los mensajes solos (online):\n  claude --dangerously-load-development-channels server:${server}`);
 }
 

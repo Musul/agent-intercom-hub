@@ -313,6 +313,68 @@ describe('vigilante (watch) y copia de seguridad', () => {
     }
   });
 
+  it('vigilante como hook de Claude Code: arranca solo, despierta con código 2, uno por chat y nada fuera de la terminal', async () => {
+    const b = await boot({ ratePerMinute: 10_000 });
+    const ka = b.agent('ana');
+    const kb = b.agent('beto');
+    await tool(b.base, ka, 'a', 'set_session_info', { description: 'emisor' });
+    // el chat de beto: conexión MCP con estado, con nombre y con su id de instancia
+    const init = await fetch(`${b.base}/mcp`, {
+      method: 'POST',
+      headers: { ...auth(kb, 'hookeado'), 'X-Session-Instance': 'cc-test-hook' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'claude-code', version: '0' } } }),
+    });
+    assert.equal(init.status, 200);
+    const home = mkdtempSync(join(tmpdir(), 'ic-home-'));
+    const cwd = new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
+    const run = (args: string[], entry: string) => {
+      const child = spawn(process.execPath, ['skill/agent-intercom/scripts/intercom-watch.mjs', ...args], {
+        env: { ...process.env, AGENT_INTERCOM_KEY: kb, AGENT_INTERCOM_URL: b.base, INTERCOM_INSTANCE: 'cc-test-hook', CLAUDE_CODE_ENTRYPOINT: entry, HOME: home, USERPROFILE: home },
+        cwd,
+      });
+      child.stdin.end('{}');
+      const st = { out: '', code: null as number | null };
+      child.stdout.on('data', (c: Buffer) => (st.out += c.toString()));
+      child.on('exit', (c) => (st.code = c));
+      return { child, st };
+    };
+    const waitFor = async (cond: () => boolean, ms = 8000) => {
+      for (let t = 0; t < ms && !cond(); t += 50) await sleep(50);
+    };
+    const presence = async () => (await tool(b.base, ka, 'a', 'list_peers', { agent: 'beto' })).data.peers.find((p: { session: string }) => p.session === 'hookeado').presence;
+
+    // fuera de la terminal interactiva (-p / SDK) no hace nada: un asyncRewake ahí bloquearía el arranque
+    const sdk = run(['--hook-rewake'], 'sdk-cli');
+    await waitFor(() => sdk.st.code !== null);
+    assert.equal(sdk.st.code, 0);
+
+    const w = run(['--hook-rewake'], 'cli');
+    try {
+      for (let i = 0; i < 80 && (await presence()) !== 'online'; i++) await sleep(50);
+      assert.equal(await presence(), 'online');
+      // un segundo hook (otro turno) no arranca otro vigilante
+      const dup = run(['--hook-rewake'], 'cli');
+      await waitFor(() => dup.st.code !== null);
+      assert.equal(dup.st.code, 0);
+      const id = (await tool(b.base, ka, 'a', 'message_peer', { peer: 'beto/hookeado', message: 'NO DEBE APARECER EL CUERPO' })).data.messageId;
+      await waitFor(() => w.st.code !== null);
+      assert.equal(w.st.code, 2); // código 2 = Claude Code despierta al modelo
+      assert.match(w.st.out, new RegExp(`mensaje ${id}`));
+      assert.doesNotMatch(w.st.out, /NO DEBE APARECER/);
+    } finally {
+      w.child.kill();
+    }
+
+    // contexto de SessionStart: solo en IDE (VS Code, JetBrains, escritorio)
+    const vs = run(['--hook-context'], 'claude-vscode');
+    await waitFor(() => vs.st.code !== null);
+    assert.match(JSON.parse(vs.st.out).hookSpecificOutput.additionalContext, /--auto --exit-on-message/);
+    const term = run(['--hook-context'], 'cli');
+    await waitFor(() => term.st.code !== null);
+    assert.equal(term.st.out, '');
+    await b.close();
+  });
+
   it('backup en caliente: copia verificada y no sobrescribe', async () => {
     const b = await boot({ ratePerMinute: 10_000 });
     const k = b.agent('ana');

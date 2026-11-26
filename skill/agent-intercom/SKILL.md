@@ -35,12 +35,14 @@ inbox or reopens.
 - For a watcher line, call `check_inbox`. Process each message and call
   `acknowledge_messages` with the ids you received and accepted. Unacknowledged messages
   come back, and pushed messages left unacknowledged make this session show as offline.
-- If this session is not receiving automatically (`get_node_status` →
-  `connection.automaticDelivery: false`, or `session.offlineReason` is
-  `sin_entrega_automatica`) and the user wants live messages, start the watcher with your
-  Bash tool **in the background** (`run_in_background`), not with Monitor (Monitor stops
-  after 30 minutes):
-  `node ~/.agentintercom/intercom-watch.mjs --session <this session name> --exit-on-message`
+- In Claude Code the watcher starts by itself through hooks (installed by `install.mjs`):
+  in the terminal it wakes you with an `[Agent Intercom] Llegó un mensaje nuevo…` notice;
+  in VS Code/IDEs a SessionStart note asks you to launch it in your first reply — do it.
+- If this session still is not receiving automatically (`get_node_status` →
+  `session.offlineReason` is `sin_entrega_automatica`) and the user wants live messages, start
+  the watcher with your Bash tool **in the background** (`run_in_background`), not with
+  Monitor (Monitor stops after 30 minutes):
+  `node ~/.agentintercom/intercom-watch.mjs --auto --exit-on-message`
   It keeps the session online and exits as soon as a new message arrives, which wakes you.
   Then call `check_inbox`, handle and acknowledge the messages, and start the same command
   again in the background so the session stays online. It needs `AGENT_INTERCOM_KEY` (or
